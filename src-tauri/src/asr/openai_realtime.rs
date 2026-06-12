@@ -159,6 +159,16 @@ impl OpenAiRealtimeAsrClient {
 
     fn handle_provider_event(&mut self, event: Value) -> Result<(), AsrError> {
         match event["type"].as_str() {
+            Some("input_audio_buffer.committed") => {
+                if let Some(item_id) = event["item_id"].as_str() {
+                    let timing = self
+                        .pending_committed_timings
+                        .pop_front()
+                        .unwrap_or_else(|| self.current_utterance_timing());
+                    self.item_timing.insert(item_id.to_string(), timing);
+                }
+                Ok(())
+            }
             Some("conversation.item.input_audio_transcription.delta") => {
                 let item_id = event["item_id"].as_str().unwrap_or("unknown").to_string();
                 let delta = event["delta"].as_str().unwrap_or_default();

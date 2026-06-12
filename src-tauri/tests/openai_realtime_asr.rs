@@ -350,6 +350,10 @@ fn late_completed_event_keeps_committed_utterance_timestamps() {
         .push_frame(&mono_16k_frame(vec![0; 320], 500))
         .expect("second utterance first frame");
     handle.queue(json!({
+        "type": "input_audio_buffer.committed",
+        "item_id": "item_1",
+    }));
+    handle.queue(json!({
         "type": "conversation.item.input_audio_transcription.completed",
         "item_id": "item_1",
         "transcript": "first final",
@@ -394,6 +398,79 @@ fn late_completed_event_keeps_committed_utterance_timestamps() {
             assert_eq!(*ended_at_ms, 540);
         }
         other => panic!("expected partial, got {other:?}"),
+    }
+}
+
+#[test]
+fn committed_item_ids_keep_timing_when_transcripts_arrive_out_of_order() {
+    let (handle, transport) = RecordingTransport::new();
+    let mut client =
+        OpenAiRealtimeAsrClient::with_transport("s1".to_string(), config(), Box::new(transport))
+            .expect("client");
+    let events = client.events();
+
+    client
+        .push_frame(&mono_16k_frame(vec![0; 320], 100))
+        .expect("first utterance frame");
+    client.finalize().expect("first commit");
+    client
+        .push_frame(&mono_16k_frame(vec![0; 320], 500))
+        .expect("second utterance frame");
+    client.finalize().expect("second commit");
+
+    handle.queue(json!({
+        "type": "input_audio_buffer.committed",
+        "item_id": "item_1",
+    }));
+    handle.queue(json!({
+        "type": "input_audio_buffer.committed",
+        "item_id": "item_2",
+    }));
+    handle.queue(json!({
+        "type": "conversation.item.input_audio_transcription.delta",
+        "item_id": "item_2",
+        "delta": "second",
+    }));
+    handle.queue(json!({
+        "type": "conversation.item.input_audio_transcription.completed",
+        "item_id": "item_1",
+        "transcript": "first final",
+    }));
+    client
+        .push_frame(&mono_16k_frame(vec![0; 320], 900))
+        .expect("drain out-of-order transcript events");
+
+    let collected = events.try_iter().collect::<Vec<_>>();
+    let partial_event = collected
+        .iter()
+        .find(|event| matches!(event, AsrEvent::Partial { text, .. } if text == "second"))
+        .expect("second partial");
+    let final_event = collected
+        .iter()
+        .find(|event| matches!(event, AsrEvent::Final { text, .. } if text == "first final"))
+        .expect("first final");
+
+    match partial_event {
+        AsrEvent::Partial {
+            started_at_ms,
+            ended_at_ms,
+            ..
+        } => {
+            assert_eq!(*started_at_ms, 500);
+            assert_eq!(*ended_at_ms, 520);
+        }
+        other => panic!("expected partial, got {other:?}"),
+    }
+    match final_event {
+        AsrEvent::Final {
+            started_at_ms,
+            ended_at_ms,
+            ..
+        } => {
+            assert_eq!(*started_at_ms, 100);
+            assert_eq!(*ended_at_ms, 120);
+        }
+        other => panic!("expected final, got {other:?}"),
     }
 }
 
