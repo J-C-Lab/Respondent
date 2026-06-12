@@ -4,8 +4,21 @@ export type ReplyAction =
   | { type: "none" }
   | { type: "start-reply"; transcript: string; context: string[] };
 
-export function createReplyEngine(sessionId: string) {
-  let endpointArmed = false;
+export type ReplyEngineOptions = {
+  /**
+   * How long an armed endpoint stays valid while waiting for its matching
+   * final transcript. If the next final arrives more than this many ms after
+   * the endpoint was detected, the endpoint is treated as orphaned (its final
+   * was lost) and is discarded instead of triggering a stale reply.
+   */
+  staleArmMs?: number;
+};
+
+const DEFAULT_STALE_ARM_MS = 4000;
+
+export function createReplyEngine(sessionId: string, options: ReplyEngineOptions = {}) {
+  const staleArmMs = options.staleArmMs ?? DEFAULT_STALE_ARM_MS;
+  let armedAtMs: number | null = null;
   const finalTurns: string[] = [];
 
   return {
@@ -15,7 +28,7 @@ export function createReplyEngine(sessionId: string) {
       }
 
       if (event.type === "endpoint.detected") {
-        endpointArmed = true;
+        armedAtMs = event.detectedAtMs;
         return { type: "none" };
       }
 
@@ -25,8 +38,10 @@ export function createReplyEngine(sessionId: string) {
           finalTurns.shift();
         }
 
-        if (endpointArmed) {
-          endpointArmed = false;
+        const armedAt = armedAtMs;
+        armedAtMs = null;
+
+        if (armedAt !== null && event.receivedAtMs - armedAt <= staleArmMs) {
           return {
             type: "start-reply",
             transcript: event.text,

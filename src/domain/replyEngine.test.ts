@@ -132,6 +132,83 @@ describe("reply engine", () => {
     ).toEqual({ type: "none" });
   });
 
+  it("does not trigger a stale reply when the matching final never arrives", () => {
+    const engine = createReplyEngine("s1", { staleArmMs: 2000 });
+    engine.apply({
+      type: "endpoint.detected",
+      sessionId: "s1",
+      silenceMs: 300,
+      detectedAtMs: 1000,
+    });
+
+    // The matching final is lost. A much later final from a new turn arrives.
+    const action = engine.apply({
+      type: "transcript.final",
+      sessionId: "s1",
+      text: "A totally different later sentence.",
+      startedAtMs: 8000,
+      endedAtMs: 8400,
+      receivedAtMs: 8500,
+    });
+
+    expect(action).toEqual({ type: "none" });
+    expect(engine.context()).toEqual(["A totally different later sentence."]);
+  });
+
+  it("re-arms normally after a stale endpoint is discarded", () => {
+    const engine = createReplyEngine("s1", { staleArmMs: 2000 });
+    engine.apply({
+      type: "endpoint.detected",
+      sessionId: "s1",
+      silenceMs: 300,
+      detectedAtMs: 1000,
+    });
+    // Orphaned: matching final lost, late final discards the stale arm.
+    engine.apply({
+      type: "transcript.final",
+      sessionId: "s1",
+      text: "late orphan",
+      startedAtMs: 8000,
+      endedAtMs: 8400,
+      receivedAtMs: 8500,
+    });
+
+    // A fresh endpoint + final pair must still trigger.
+    engine.apply({
+      type: "endpoint.detected",
+      sessionId: "s1",
+      silenceMs: 300,
+      detectedAtMs: 9000,
+    });
+    const action = engine.apply({
+      type: "transcript.final",
+      sessionId: "s1",
+      text: "fresh turn",
+      startedAtMs: 8900,
+      endedAtMs: 9050,
+      receivedAtMs: 9200,
+    });
+
+    expect(action).toEqual({
+      type: "start-reply",
+      transcript: "fresh turn",
+      context: ["late orphan", "fresh turn"],
+    });
+  });
+
+  it("does not trigger when a final arrives before any endpoint", () => {
+    const engine = createReplyEngine("s1");
+    const action = engine.apply({
+      type: "transcript.final",
+      sessionId: "s1",
+      text: "no endpoint yet",
+      startedAtMs: 0,
+      endedAtMs: 400,
+      receivedAtMs: 500,
+    });
+    expect(action).toEqual({ type: "none" });
+  });
+
   it("keeps only the latest six final turns in context", () => {
     const engine = createReplyEngine("s1");
     for (let index = 0; index < 7; index += 1) {
