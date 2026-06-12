@@ -1,5 +1,6 @@
 pub mod asr;
 pub mod audio;
+pub mod commands;
 pub mod llm;
 pub mod session;
 
@@ -7,6 +8,11 @@ pub mod session;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            commands::list_audio_output_devices,
+            commands::start_session,
+            commands::end_session
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
