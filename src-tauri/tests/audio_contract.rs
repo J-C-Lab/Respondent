@@ -1,6 +1,6 @@
 use respondent_lib::audio::convert::{
-    downmix_to_mono, to_pcm16, FrameChunker, LinearResampler, TARGET_BITS_PER_SAMPLE,
-    TARGET_CHANNELS, TARGET_FRAME_SAMPLES, TARGET_RATE,
+    downmix_to_mono, to_pcm16, CapturePipeline, FrameChunker, LinearResampler,
+    TARGET_BITS_PER_SAMPLE, TARGET_CHANNELS, TARGET_FRAME_SAMPLES, TARGET_RATE,
 };
 use respondent_lib::audio::devices::{list_output_devices, OutputDevice};
 use respondent_lib::audio::frame::{AudioFrame, PcmFormat};
@@ -127,6 +127,28 @@ fn frame_chunker_emits_full_320_sample_frames_and_retains_remainder() {
     assert_eq!(second.len(), 1);
     assert_eq!(second[0].len(), 320);
     assert_eq!(chunker.pending_len(), 0);
+}
+
+#[test]
+fn capture_pipeline_outputs_16khz_mono_pcm_frames() {
+    let mut pipeline = CapturePipeline::new(48_000, 2);
+    let stereo = (0..1_920)
+        .flat_map(|index| {
+            let sample = ((index % 48) as f32) / 48.0;
+            [sample, sample]
+        })
+        .collect::<Vec<_>>();
+
+    let frames = pipeline.push_interleaved_f32(&stereo, 42);
+
+    assert!(!frames.is_empty());
+    assert!(frames.iter().all(|frame| frame.format.sample_rate == 16_000));
+    assert!(frames.iter().all(|frame| frame.format.channels == 1));
+    assert!(frames
+        .iter()
+        .all(|frame| frame.format.bits_per_sample == 16));
+    assert!(frames.iter().all(|frame| frame.samples.len() == 320));
+    assert!(frames.iter().all(|frame| frame.captured_at_ms == 42));
 }
 
 #[test]

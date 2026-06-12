@@ -1,3 +1,5 @@
+use super::frame::{AudioFrame, PcmFormat};
+
 pub const TARGET_RATE: u32 = 16_000;
 pub const TARGET_CHANNELS: u16 = 1;
 pub const TARGET_BITS_PER_SAMPLE: u16 = 16;
@@ -108,5 +110,46 @@ impl FrameChunker {
 
     pub fn pending_len(&self) -> usize {
         self.buf.len()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CapturePipeline {
+    resampler: LinearResampler,
+    chunker: FrameChunker,
+    channels: u16,
+}
+
+impl CapturePipeline {
+    pub fn new(src_rate: u32, channels: u16) -> Self {
+        Self {
+            resampler: LinearResampler::new(src_rate, TARGET_RATE),
+            chunker: FrameChunker::new(),
+            channels,
+        }
+    }
+
+    pub fn push_interleaved_f32(
+        &mut self,
+        interleaved: &[f32],
+        captured_at_ms: u64,
+    ) -> Vec<AudioFrame> {
+        let mono = downmix_to_mono(interleaved, self.channels);
+        let resampled = self.resampler.process(&mono);
+        let pcm = to_pcm16(&resampled);
+
+        self.chunker
+            .push(&pcm)
+            .into_iter()
+            .map(|samples| AudioFrame {
+                format: PcmFormat {
+                    sample_rate: TARGET_RATE,
+                    channels: TARGET_CHANNELS,
+                    bits_per_sample: TARGET_BITS_PER_SAMPLE,
+                },
+                samples,
+                captured_at_ms,
+            })
+            .collect()
     }
 }
