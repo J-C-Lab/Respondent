@@ -2,7 +2,7 @@ use respondent_lib::audio::convert::{
     downmix_to_mono, to_pcm16, CapturePipeline, FrameChunker, LinearResampler,
     TARGET_BITS_PER_SAMPLE, TARGET_CHANNELS, TARGET_FRAME_SAMPLES, TARGET_RATE,
 };
-use respondent_lib::audio::capture::LoopbackCapture;
+use respondent_lib::audio::capture::{LoopbackCapture, SampleFormat, WasapiFormat};
 use respondent_lib::audio::devices::{list_output_devices, OutputDevice};
 use respondent_lib::audio::frame::{AudioFrame, PcmFormat};
 
@@ -174,6 +174,28 @@ fn loopback_capture_drops_new_frames_when_test_channel_is_full() {
     assert_eq!(capture.dropped_frames(), 1);
     let frame = capture.receiver().try_recv().expect("old frame is retained");
     assert_eq!(frame.captured_at_ms, 1);
+}
+
+#[test]
+fn accepts_float32_and_pcm16_formats() {
+    assert_eq!(
+        WasapiFormat::new(48_000, 2, 32, SampleFormat::Float32)
+            .expect("float32")
+            .sample_format,
+        SampleFormat::Float32
+    );
+    assert_eq!(
+        WasapiFormat::new(48_000, 2, 16, SampleFormat::Pcm16)
+            .expect("pcm16")
+            .sample_format,
+        SampleFormat::Pcm16
+    );
+}
+
+#[test]
+fn rejects_unsupported_pcm_bit_depths() {
+    let err = WasapiFormat::new(48_000, 2, 24, SampleFormat::Pcm16).expect_err("pcm24 rejected");
+    assert!(err.to_string().contains("unsupported"));
 }
 
 #[test]

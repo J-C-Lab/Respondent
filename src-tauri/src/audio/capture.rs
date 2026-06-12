@@ -19,6 +19,42 @@ pub enum CaptureError {
     Com(#[from] windows::core::Error),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleFormat {
+    Float32,
+    Pcm16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WasapiFormat {
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub bits_per_sample: u16,
+    pub sample_format: SampleFormat,
+}
+
+impl WasapiFormat {
+    pub fn new(
+        sample_rate: u32,
+        channels: u16,
+        bits_per_sample: u16,
+        sample_format: SampleFormat,
+    ) -> Result<Self, CaptureError> {
+        match (sample_format, bits_per_sample) {
+            (SampleFormat::Float32, 32) | (SampleFormat::Pcm16, 16) => Ok(Self {
+                sample_rate,
+                channels,
+                bits_per_sample,
+                sample_format,
+            }),
+            _ => Err(CaptureError::Unsupported(format!(
+                "unsupported WASAPI format: {:?} {}-bit",
+                sample_format, bits_per_sample
+            ))),
+        }
+    }
+}
+
 pub struct LoopbackCapture {
     sender: Sender<AudioFrame>,
     receiver: Receiver<AudioFrame>,
