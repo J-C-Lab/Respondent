@@ -103,3 +103,19 @@ fn default_config_uses_low_latency_model_and_delay() {
     assert_eq!(config.language, None);
     assert_eq!(config.transcription_delay, TranscriptionDelay::Minimal);
 }
+
+#[test]
+fn whitespace_api_key_is_rejected() {
+    let (_, transport) = RecordingTransport::new();
+
+    let result = OpenAiRealtimeAsrClient::with_transport(
+        "s1".to_string(),
+        OpenAiRealtimeConfig::from_api_key("   "),
+        Box::new(transport),
+    );
+
+    match result {
+        Err(err) => assert_eq!(err.to_string(), "asr provider error: missing OPENAI_API_KEY"),
+        Ok(_) => panic!("blank keys should be rejected"),
+    }
+}

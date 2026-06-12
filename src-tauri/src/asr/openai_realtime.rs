@@ -70,7 +70,7 @@ impl OpenAiRealtimeAsrClient {
         config: OpenAiRealtimeConfig,
         transport: Box<dyn RealtimeTransport>,
     ) -> Result<Self, AsrError> {
-        if config.api_key.is_empty() {
+        if config.api_key.trim().is_empty() {
             return Err(AsrError::Provider("missing OPENAI_API_KEY".to_string()));
         }
 
