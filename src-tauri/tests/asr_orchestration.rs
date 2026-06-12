@@ -64,3 +64,71 @@ fn endpointer_speech_burst_resets_silence_counter() {
     assert_eq!(endpointer.observe(&frame(0, 100)), None); // 40ms
     assert_eq!(endpointer.observe(&frame(0, 120)), Some(EndpointSignal::EndOfSpeech)); // 60ms
 }
+
+use respondent_lib::asr::client::{AsrEvent, StreamingAsrClient};
+use respondent_lib::asr::mock::MockAsrClient;
+
+#[test]
+fn mock_emits_partials_while_frames_arrive() {
+    let mut client = MockAsrClient::new("s1");
+    let events = client.events();
+    for index in 0..25 {
+        client.push_frame(&frame(8000, index * 20)).unwrap();
+    }
+
+    match events.try_recv().expect("a partial after 25 frames") {
+        AsrEvent::Partial { session_id, text, .. } => {
+            assert_eq!(session_id, "s1");
+            assert!(!text.is_empty());
+        }
+        other => panic!("expected partial, got {other:?}"),
+    }
+}
+
+#[test]
+fn mock_emits_full_phrase_on_finalize() {
+    let mut client = MockAsrClient::new("s1");
+    let events = client.events();
+    for index in 0..10 {
+        client.push_frame(&frame(8000, index * 20)).unwrap();
+    }
+    client.finalize().unwrap();
+
+    let mut last_final = None;
+    while let Ok(event) = events.try_recv() {
+        if let AsrEvent::Final { text, .. } = event {
+            last_final = Some(text);
+        }
+    }
+    assert_eq!(last_final.as_deref(), Some("could you summarize the timeline"));
+}
+
+#[test]
+fn mock_advances_to_next_phrase_after_finalize() {
+    let mut client = MockAsrClient::new("s1");
+    let events = client.events();
+
+    client.push_frame(&frame(8000, 0)).unwrap();
+    client.finalize().unwrap();
+    client.push_frame(&frame(8000, 20)).unwrap();
+    client.finalize().unwrap();
+
+    let finals: Vec<String> = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            AsrEvent::Final { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(finals, vec![
+        "could you summarize the timeline".to_string(),
+        "what are the main risks".to_string(),
+    ]);
+}
+
+#[test]
+fn mock_finalize_without_frames_is_a_noop() {
+    let mut client = MockAsrClient::new("s1");
+    let events = client.events();
+    client.finalize().unwrap();
+    assert!(events.try_recv().is_err());
+}
