@@ -132,3 +132,51 @@ fn mock_finalize_without_frames_is_a_noop() {
     client.finalize().unwrap();
     assert!(events.try_recv().is_err());
 }
+
+use std::time::Duration;
+
+use crossbeam_channel::unbounded as unbounded_frames;
+use respondent_lib::asr::session::TranscriptionSession;
+
+#[test]
+fn session_emits_partial_then_endpoint_then_final_for_one_utterance() {
+    let (frame_tx, frame_rx) = unbounded_frames();
+    let session = TranscriptionSession::start(
+        "s1".to_string(),
+        frame_rx,
+        Box::new(MockAsrClient::new("s1")),
+        EnergyEndpointer::new(0.01, 60),
+    );
+    let events = session.events();
+
+    let mut at_ms = 0u64;
+    for _ in 0..30 {
+        frame_tx.send(frame(8000, at_ms)).unwrap();
+        at_ms += 20;
+    }
+    for _ in 0..5 {
+        frame_tx.send(frame(0, at_ms)).unwrap();
+        at_ms += 20;
+    }
+    drop(frame_tx); // closing the capture stream ends the session
+
+    let mut collected = Vec::new();
+    while let Ok(event) = events.recv_timeout(Duration::from_secs(2)) {
+        collected.push(event);
+    }
+    session.stop().unwrap();
+
+    assert!(
+        matches!(collected.first(), Some(AsrEvent::Partial { .. })),
+        "first event should be a partial, got {collected:?}"
+    );
+    let endpoint_pos = collected
+        .iter()
+        .position(|event| matches!(event, AsrEvent::Endpoint { .. }))
+        .expect("an endpoint event");
+    let final_pos = collected
+        .iter()
+        .position(|event| matches!(event, AsrEvent::Final { .. }))
+        .expect("a final event");
+    assert!(endpoint_pos < final_pos, "endpoint must precede final: {collected:?}");
+}
