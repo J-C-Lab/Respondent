@@ -97,6 +97,25 @@ fn resampler_is_continuous_across_chunks() {
 }
 
 #[test]
+fn resampler_preserves_fractional_position_across_chunks() {
+    let input = (0..128).map(|value| value as f32).collect::<Vec<_>>();
+    let mut one_pass = LinearResampler::new(44_100, 16_000);
+    let expected = one_pass.process(&input);
+
+    let mut chunked = LinearResampler::new(44_100, 16_000);
+    let mut actual = chunked.process(&input[..64]);
+    actual.extend(chunked.process(&input[64..]));
+
+    assert_eq!(actual.len(), expected.len());
+    for (index, (actual, expected)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() <= f32::EPSILON,
+            "sample {index}: actual {actual}, expected {expected}"
+        );
+    }
+}
+
+#[test]
 fn frame_chunker_emits_full_320_sample_frames_and_retains_remainder() {
     let mut chunker = FrameChunker::new();
     let first = chunker.push(&vec![1; 800]);

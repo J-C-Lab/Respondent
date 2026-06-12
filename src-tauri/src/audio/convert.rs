@@ -65,7 +65,6 @@ impl LinearResampler {
         }
         extended.extend_from_slice(input);
 
-        let offset = if self.last.is_some() { 1.0 } else { 0.0 };
         let step = self.src_rate as f64 / self.dst_rate as f64;
         let mut output = Vec::new();
 
@@ -78,10 +77,7 @@ impl LinearResampler {
             self.pos += step;
         }
 
-        self.pos -= input.len() as f64;
-        if self.last.is_some() {
-            self.pos += offset;
-        }
+        self.pos -= (extended.len() - 1) as f64;
         if self.pos < 0.0 {
             self.pos = 0.0;
         }
