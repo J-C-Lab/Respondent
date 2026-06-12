@@ -1,10 +1,12 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use respondent_lib::asr::client::{AsrError, StreamingAsrClient};
 use respondent_lib::asr::openai_realtime::{
     OpenAiRealtimeAsrClient, OpenAiRealtimeConfig, RealtimeTransport, TranscriptionDelay,
 };
+use respondent_lib::audio::frame::{AudioFrame, PcmFormat};
 use serde_json::{json, Value};
 
 #[derive(Clone, Default)]
@@ -60,6 +62,18 @@ fn config() -> OpenAiRealtimeConfig {
     }
 }
 
+fn mono_16k_frame(samples: Vec<i16>, captured_at_ms: u64) -> AudioFrame {
+    AudioFrame {
+        format: PcmFormat {
+            sample_rate: 16_000,
+            channels: 1,
+            bits_per_sample: 16,
+        },
+        samples,
+        captured_at_ms,
+    }
+}
+
 #[test]
 fn new_sends_transcription_session_update() {
     let (handle, transport) = RecordingTransport::new();
@@ -93,6 +107,57 @@ fn new_sends_transcription_session_update() {
         "minimal"
     );
     assert!(update["session"]["audio"]["input"]["turn_detection"].is_null());
+}
+
+#[test]
+fn push_frame_appends_24khz_base64_pcm() {
+    let (handle, transport) = RecordingTransport::new();
+    let mut client =
+        OpenAiRealtimeAsrClient::with_transport("s1".to_string(), config(), Box::new(transport))
+            .expect("client");
+
+    let frame = mono_16k_frame(vec![1000; 320], 100);
+
+    client.push_frame(&frame).expect("push frame");
+
+    let sent = handle.sent();
+    let append = sent
+        .iter()
+        .find(|message| message["type"] == "input_audio_buffer.append")
+        .expect("append message");
+    let audio = append["audio"].as_str().expect("audio base64");
+    let bytes = STANDARD.decode(audio).expect("valid base64");
+
+    assert_eq!(bytes.len(), 960);
+    assert_eq!(bytes[0], 232);
+    assert_eq!(bytes[1], 3);
+}
+
+#[test]
+fn wrong_frame_format_is_rejected_without_append() {
+    let (handle, transport) = RecordingTransport::new();
+    let mut client =
+        OpenAiRealtimeAsrClient::with_transport("s1".to_string(), config(), Box::new(transport))
+            .expect("client");
+    let frame = AudioFrame {
+        format: PcmFormat {
+            sample_rate: 48_000,
+            channels: 2,
+            bits_per_sample: 16,
+        },
+        samples: vec![0; 960],
+        captured_at_ms: 100,
+    };
+
+    let err = client
+        .push_frame(&frame)
+        .expect_err("wrong format should be rejected");
+
+    assert!(err.to_string().contains("expects 16 kHz mono i16 frames"));
+    assert!(!handle
+        .sent()
+        .iter()
+        .any(|message| message["type"] == "input_audio_buffer.append"));
 }
 
 #[test]
