@@ -115,7 +115,8 @@ fn whitespace_api_key_is_rejected() {
     );
 
     match result {
-        Err(err) => assert_eq!(err.to_string(), "asr provider error: missing OPENAI_API_KEY"),
+        Err(AsrError::Provider(message)) => assert_eq!(message, "missing OPENAI_API_KEY"),
+        Err(other) => panic!("expected provider error, got {other:?}"),
         Ok(_) => panic!("blank keys should be rejected"),
     }
 }

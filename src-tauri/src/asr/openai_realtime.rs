@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use serde_json::{json, Value};
@@ -34,12 +35,23 @@ impl TranscriptionDelay {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct OpenAiRealtimeConfig {
     pub api_key: String,
     pub model: String,
     pub language: Option<String>,
     pub transcription_delay: TranscriptionDelay,
+}
+
+impl fmt::Debug for OpenAiRealtimeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenAiRealtimeConfig")
+            .field("api_key", &"<redacted>")
+            .field("model", &self.model)
+            .field("language", &self.language)
+            .field("transcription_delay", &self.transcription_delay)
+            .finish()
+    }
 }
 
 impl OpenAiRealtimeConfig {
@@ -129,7 +141,9 @@ impl OpenAiRealtimeAsrClient {
             return Err(AsrError::Provider("openai realtime error".to_string()));
         }
 
-        let _ = (
+        // Transcript parsing lands in the next tasks; keep the planned state
+        // fields present without changing Task 1's provider-event behavior.
+        let _planned_state = (
             &self.session_id,
             &self.sender,
             &self.item_text,
