@@ -65,4 +65,22 @@ describe("transcript engine", () => {
     expect(engine.snapshot().livePartial).toBe("");
     expect(engine.snapshot().finalTurns).toEqual([]);
   });
+
+  it("does not let snapshot turn mutations corrupt later snapshots", () => {
+    const engine = createTranscriptEngine("s1");
+
+    engine.apply({
+      type: "transcript.final",
+      sessionId: "s1",
+      text: "Original text.",
+      startedAtMs: 0,
+      endedAtMs: 900,
+      receivedAtMs: 1100,
+    });
+
+    const snapshot = engine.snapshot();
+    snapshot.finalTurns[0].text = "mutated outside the engine";
+
+    expect(engine.snapshot().finalTurns[0].text).toBe("Original text.");
+  });
 });

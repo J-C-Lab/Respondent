@@ -37,7 +37,7 @@ export function createTranscriptEngine(sessionId: string) {
       return {
         sessionId,
         livePartial,
-        finalTurns: [...finalTurns],
+        finalTurns: finalTurns.map((turn) => ({ ...turn })),
       };
     },
   };
