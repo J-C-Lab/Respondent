@@ -2,6 +2,7 @@ use respondent_lib::audio::convert::{
     downmix_to_mono, to_pcm16, CapturePipeline, FrameChunker, LinearResampler,
     TARGET_BITS_PER_SAMPLE, TARGET_CHANNELS, TARGET_FRAME_SAMPLES, TARGET_RATE,
 };
+use respondent_lib::audio::capture::LoopbackCapture;
 use respondent_lib::audio::devices::{list_output_devices, OutputDevice};
 use respondent_lib::audio::frame::{AudioFrame, PcmFormat};
 
@@ -149,6 +150,30 @@ fn capture_pipeline_outputs_16khz_mono_pcm_frames() {
         .all(|frame| frame.format.bits_per_sample == 16));
     assert!(frames.iter().all(|frame| frame.samples.len() == 320));
     assert!(frames.iter().all(|frame| frame.captured_at_ms == 42));
+}
+
+#[test]
+fn loopback_capture_test_constructor_preserves_receiver_contract() {
+    let capture = LoopbackCapture::new_for_device("default-output");
+    let receiver = capture.receiver();
+
+    capture.push_test_frame(123);
+    let frame = receiver.try_recv().expect("test frame");
+
+    assert_eq!(frame.captured_at_ms, 123);
+    assert_eq!(frame.format.sample_rate, 16_000);
+    assert_eq!(frame.samples.len(), 320);
+}
+
+#[test]
+fn loopback_capture_drops_new_frames_when_test_channel_is_full() {
+    let capture = LoopbackCapture::new_for_test_with_capacity(1);
+    capture.push_test_frame(1);
+    capture.push_test_frame(2);
+
+    assert_eq!(capture.dropped_frames(), 1);
+    let frame = capture.receiver().try_recv().expect("old frame is retained");
+    assert_eq!(frame.captured_at_ms, 1);
 }
 
 #[test]
