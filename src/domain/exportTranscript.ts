@@ -46,10 +46,12 @@ export function exportMarkdown(session: SessionExport): string {
   return [
     `## ${session.title}`,
     "",
-    `Started: ${session.startedAt}`,
-    `Ended: ${session.endedAt}`,
+    `- Started: ${session.startedAt}`,
+    `- Ended: ${session.endedAt}`,
     "",
-    ...session.events.map(eventLine),
+    "### Timeline",
+    "",
+    ...session.events.map((event) => `- ${eventLine(event)}`),
     "",
   ].join("\n");
 }

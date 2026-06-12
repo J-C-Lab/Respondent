@@ -13,10 +13,8 @@ const session: SessionExport = {
 
 describe("session export", () => {
   it("exports Markdown with timestamps and suggestions", () => {
-    expect(exportMarkdown(session)).toContain("## Customer call");
-    expect(exportMarkdown(session)).toContain("[00:01.200] Transcript: What is the timeline?");
-    expect(exportMarkdown(session)).toContain(
-      "[00:02.100] Suggestion: We can deliver the first draft by Friday.",
+    expect(exportMarkdown(session)).toBe(
+      "## Customer call\n\n- Started: 2026-06-12T08:00:00.000Z\n- Ended: 2026-06-12T08:05:00.000Z\n\n### Timeline\n\n- [00:01.200] Transcript: What is the timeline?\n- [00:02.100] Suggestion: We can deliver the first draft by Friday.\n",
     );
   });
 
