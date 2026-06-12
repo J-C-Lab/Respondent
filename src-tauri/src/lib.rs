@@ -3,6 +3,7 @@ pub mod audio;
 pub mod commands;
 pub mod llm;
 pub mod session;
+pub mod telemetry;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
