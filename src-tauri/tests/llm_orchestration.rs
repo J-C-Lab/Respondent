@@ -75,3 +75,12 @@ fn trigger_rolls_context_to_six_and_counts_generations() {
         ]
     );
 }
+
+#[test]
+fn double_endpoint_does_not_double_fire() {
+    let mut trigger = ReplyTrigger::new("s1");
+    trigger.observe(&endpoint());
+    trigger.observe(&endpoint()); // second endpoint while armed — idempotent
+    assert!(trigger.observe(&final_event("once")).is_some());
+    assert!(trigger.observe(&final_event("twice")).is_none()); // no second fire
+}
