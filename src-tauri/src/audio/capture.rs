@@ -40,6 +40,17 @@ impl WasapiFormat {
         bits_per_sample: u16,
         sample_format: SampleFormat,
     ) -> Result<Self, CaptureError> {
+        if sample_rate == 0 {
+            return Err(CaptureError::Unsupported(
+                "unsupported WASAPI format: sample_rate=0".into(),
+            ));
+        }
+        if channels == 0 {
+            return Err(CaptureError::Unsupported(
+                "unsupported WASAPI format: channels=0".into(),
+            ));
+        }
+
         match (sample_format, bits_per_sample) {
             (SampleFormat::Float32, 32) | (SampleFormat::Pcm16, 16) => Ok(Self {
                 sample_rate,
@@ -48,7 +59,7 @@ impl WasapiFormat {
                 sample_format,
             }),
             _ => Err(CaptureError::Unsupported(format!(
-                "unsupported WASAPI format: {:?} {}-bit",
+                "unsupported WASAPI format: sample_format={:?}, bits_per_sample={}",
                 sample_format, bits_per_sample
             ))),
         }

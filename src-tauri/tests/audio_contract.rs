@@ -1,8 +1,8 @@
+use respondent_lib::audio::capture::{LoopbackCapture, SampleFormat, WasapiFormat};
 use respondent_lib::audio::convert::{
     downmix_to_mono, to_pcm16, CapturePipeline, FrameChunker, LinearResampler,
     TARGET_BITS_PER_SAMPLE, TARGET_CHANNELS, TARGET_FRAME_SAMPLES, TARGET_RATE,
 };
-use respondent_lib::audio::capture::{LoopbackCapture, SampleFormat, WasapiFormat};
 use respondent_lib::audio::devices::{list_output_devices, OutputDevice};
 use respondent_lib::audio::frame::{AudioFrame, PcmFormat};
 
@@ -143,7 +143,9 @@ fn capture_pipeline_outputs_16khz_mono_pcm_frames() {
     let frames = pipeline.push_interleaved_f32(&stereo, 42);
 
     assert!(!frames.is_empty());
-    assert!(frames.iter().all(|frame| frame.format.sample_rate == 16_000));
+    assert!(frames
+        .iter()
+        .all(|frame| frame.format.sample_rate == 16_000));
     assert!(frames.iter().all(|frame| frame.format.channels == 1));
     assert!(frames
         .iter()
@@ -172,7 +174,10 @@ fn loopback_capture_drops_new_frames_when_test_channel_is_full() {
     capture.push_test_frame(2);
 
     assert_eq!(capture.dropped_frames(), 1);
-    let frame = capture.receiver().try_recv().expect("old frame is retained");
+    let frame = capture
+        .receiver()
+        .try_recv()
+        .expect("old frame is retained");
     assert_eq!(frame.captured_at_ms, 1);
 }
 
@@ -196,6 +201,40 @@ fn accepts_float32_and_pcm16_formats() {
 fn rejects_unsupported_pcm_bit_depths() {
     let err = WasapiFormat::new(48_000, 2, 24, SampleFormat::Pcm16).expect_err("pcm24 rejected");
     assert!(err.to_string().contains("unsupported"));
+    assert!(err.to_string().contains("Pcm16"));
+    assert!(err.to_string().contains("bits_per_sample=24"));
+}
+
+#[test]
+fn rejects_zero_sample_rate_with_field_value() {
+    let err = WasapiFormat::new(0, 2, 32, SampleFormat::Float32).expect_err("sample_rate rejected");
+
+    assert!(err.to_string().contains("unsupported"));
+    assert!(err.to_string().contains("sample_rate=0"));
+}
+
+#[test]
+fn rejects_zero_channels_with_field_value() {
+    let err =
+        WasapiFormat::new(48_000, 0, 32, SampleFormat::Float32).expect_err("channels rejected");
+
+    assert!(err.to_string().contains("unsupported"));
+    assert!(err.to_string().contains("channels=0"));
+}
+
+#[test]
+fn rejects_format_bit_depth_mismatches_with_field_values() {
+    let float_err =
+        WasapiFormat::new(48_000, 2, 16, SampleFormat::Float32).expect_err("float16 rejected");
+    assert!(float_err.to_string().contains("unsupported"));
+    assert!(float_err.to_string().contains("Float32"));
+    assert!(float_err.to_string().contains("bits_per_sample=16"));
+
+    let pcm_err =
+        WasapiFormat::new(48_000, 2, 32, SampleFormat::Pcm16).expect_err("pcm32 rejected");
+    assert!(pcm_err.to_string().contains("unsupported"));
+    assert!(pcm_err.to_string().contains("Pcm16"));
+    assert!(pcm_err.to_string().contains("bits_per_sample=32"));
 }
 
 #[test]
