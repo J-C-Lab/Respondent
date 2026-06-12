@@ -52,3 +52,15 @@ fn endpointer_exposes_its_silence_window() {
     let endpointer = EnergyEndpointer::new(0.01, 300);
     assert_eq!(endpointer.silence_window_ms(), 300);
 }
+
+#[test]
+fn endpointer_speech_burst_resets_silence_counter() {
+    let mut endpointer = EnergyEndpointer::new(0.01, 60);
+    endpointer.observe(&frame(8000, 0)); // start of speech
+    endpointer.observe(&frame(0, 20)); // 20ms silence
+    endpointer.observe(&frame(0, 40)); // 40ms silence (not yet 60)
+    endpointer.observe(&frame(8000, 60)); // speech resumes -> counter resets
+    assert_eq!(endpointer.observe(&frame(0, 80)), None); // only 20ms since speech
+    assert_eq!(endpointer.observe(&frame(0, 100)), None); // 40ms
+    assert_eq!(endpointer.observe(&frame(0, 120)), Some(EndpointSignal::EndOfSpeech)); // 60ms
+}

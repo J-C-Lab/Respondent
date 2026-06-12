@@ -64,7 +64,7 @@ fn frame_rms(samples: &[i16]) -> f32 {
     let sum_sq: f64 = samples
         .iter()
         .map(|&sample| {
-            let normalized = sample as f64 / i16::MAX as f64;
+            let normalized = sample as f64 / 32768.0_f64;
             normalized * normalized
         })
         .sum();
