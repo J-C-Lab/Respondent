@@ -42,6 +42,8 @@ impl MockAsrClient {
         self.phrases[self.phrase_index % self.phrases.len()]
     }
 
+    /// Reveals one more word per partial, saturating at the full phrase once
+    /// every word has been shown (acceptable for a deterministic test double).
     fn partial_prefix(&self) -> String {
         let words: Vec<&str> = self.current_phrase().split(' ').collect();
         let take = (self.partials_emitted + 1).clamp(1, words.len());

@@ -79,7 +79,7 @@ fn mock_emits_partials_while_frames_arrive() {
     match events.try_recv().expect("a partial after 25 frames") {
         AsrEvent::Partial { session_id, text, .. } => {
             assert_eq!(session_id, "s1");
-            assert!(!text.is_empty());
+            assert_eq!(text, "could");
         }
         other => panic!("expected partial, got {other:?}"),
     }
