@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod session;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
