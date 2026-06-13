@@ -114,6 +114,60 @@ fn real_openai_asr_and_llm_smoke_when_api_key_is_present() {
     );
 }
 
+#[test]
+#[ignore = "captures real system audio and uses real SiliconFlow file transcription"]
+fn real_capture_to_siliconflow_transcription() {
+    use respondent_lib::asr::siliconflow_file::{
+        encode_wav_pcm16_mono, ReqwestTranscriptionTransport, SiliconFlowFileConfig,
+        TranscriptionTransport,
+    };
+    use respondent_lib::audio::capture::LoopbackCapture;
+
+    let Some(api_key) = std::env::var("SILICONFLOW_API_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping: SILICONFLOW_API_KEY not set");
+        return;
+    };
+
+    let capture = LoopbackCapture::start("default-output").expect("start loopback capture");
+    let receiver = capture.receiver();
+    let mut buffer: Vec<i16> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline {
+        if let Ok(frame) = receiver.recv_timeout(Duration::from_millis(200)) {
+            buffer.extend_from_slice(&frame.samples);
+        }
+    }
+    let _ = capture.stop();
+
+    let nonzero = buffer.iter().filter(|sample| **sample != 0).count();
+    eprintln!(
+        "[capture] {} samples (~{} ms), non-zero={nonzero}",
+        buffer.len(),
+        buffer.len() / 16
+    );
+    assert!(!buffer.is_empty(), "no audio frames captured");
+
+    let wav = encode_wav_pcm16_mono(&buffer, 16_000);
+    let model = std::env::var("SILICONFLOW_ASR_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "FunAudioLLM/SenseVoiceSmall".to_string());
+    eprintln!("[siliconflow-asr] model = {model}, wav_bytes = {}", wav.len());
+    let transport = ReqwestTranscriptionTransport::default();
+    let config = SiliconFlowFileConfig {
+        base_url: "https://api.siliconflow.cn/v1".into(),
+        api_key,
+        model,
+    };
+    let text = transport
+        .transcribe(&config, &wav)
+        .expect("real SiliconFlow transcription round-trip");
+    eprintln!("[siliconflow-asr] TRANSCRIPT: {text:?}");
+}
+
 fn smoke_frames() -> Vec<AudioFrame> {
     let mut frames = Vec::new();
     for frame_index in 0..25 {
