@@ -127,6 +127,28 @@ fn compatible_client_error_does_not_leak_key() {
     assert!(!final_text.contains("secret-key"));
 }
 
+#[test]
+fn with_transport_rejects_empty_api_key() {
+    let mut cfg = config();
+    cfg.api_key = "".into();
+    let result = OpenAiCompatibleReplyClient::with_transport(
+        cfg,
+        Arc::new(FakeChatTransport::new(vec![])),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn with_transport_rejects_empty_base_url() {
+    let mut cfg = config();
+    cfg.base_url = "".into();
+    let result = OpenAiCompatibleReplyClient::with_transport(
+        cfg,
+        Arc::new(FakeChatTransport::new(vec![])),
+    );
+    assert!(result.is_err());
+}
+
 fn collect(mut gen: Box<dyn ReplyGeneration>) -> Vec<ReplyEvent> {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut out = Vec::new();

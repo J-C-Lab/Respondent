@@ -112,6 +112,9 @@ impl OpenAiCompatibleReplyClient {
         if config.base_url.trim().is_empty() {
             return Err(LlmError::Provider("missing base_url".to_string()));
         }
+        if config.model.trim().is_empty() {
+            return Err(LlmError::Provider("missing model".to_string()));
+        }
         Ok(Self { config, transport })
     }
 }
