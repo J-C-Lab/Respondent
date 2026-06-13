@@ -1,4 +1,6 @@
-use respondent_lib::commands::{end_session_for_test, start_session_for_test, SystemStatusEvent};
+use respondent_lib::commands::{
+    end_session_for_test, reply_provider_name_for_test, start_session_for_test, SystemStatusEvent,
+};
 
 #[test]
 fn start_session_rejects_empty_title() {
@@ -36,4 +38,17 @@ fn system_status_serializes_to_frontend_contract() {
     assert_eq!(value["level"], "info");
     assert_eq!(value["message"], "ready");
     assert!(value["receivedAtMs"].as_i64().unwrap() > 0);
+}
+
+#[test]
+fn reply_provider_selection_uses_mock_without_api_key() {
+    assert_eq!(reply_provider_name_for_test(None), "mock-llm");
+}
+
+#[test]
+fn reply_provider_selection_uses_openai_with_api_key() {
+    assert_eq!(
+        reply_provider_name_for_test(Some("test-key".to_string())),
+        "openai-responses-llm"
+    );
 }

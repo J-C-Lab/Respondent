@@ -15,8 +15,9 @@ use crate::asr::openai_realtime::{OpenAiRealtimeAsrClient, OpenAiRealtimeConfig}
 use crate::asr::session::TranscriptionSession;
 use crate::audio::capture::LoopbackCapture;
 use crate::audio::devices::{list_output_devices, OutputDevice};
-use crate::llm::client::ReplyEvent;
+use crate::llm::client::{ReplyEvent, StreamingReplyClient};
 use crate::llm::mock::MockReplyClient;
+use crate::llm::openai_responses::{OpenAiReplyClient, OpenAiReplyConfig};
 use crate::llm::reply_trigger::ReplyTrigger;
 use crate::llm::session::ReplySession;
 
@@ -165,9 +166,10 @@ impl SessionRuntime {
         let asr_events = transcription.events();
         let (reply_asr_tx, reply_asr_rx) = unbounded::<AsrEvent>();
         let asr_bridge = spawn_asr_bridge(app.clone(), asr_events, reply_asr_tx);
+        let (reply_client, using_mock_llm) = build_reply_client()?;
         let reply = ReplySession::start(
             reply_asr_rx,
-            Box::new(MockReplyClient),
+            reply_client,
             ReplyTrigger::new(session_id.clone()),
         );
         let reply_bridge = spawn_reply_bridge(app.clone(), reply.events());
@@ -176,8 +178,17 @@ impl SessionRuntime {
             emit_status(
                 &app,
                 SystemStatusEvent::info(
-                    Some(session_id),
+                    Some(session_id.clone()),
                     "OPENAI_API_KEY not set; using mock ASR provider",
+                ),
+            );
+        }
+        if using_mock_llm {
+            emit_status(
+                &app,
+                SystemStatusEvent::info(
+                    Some(session_id),
+                    "OPENAI_API_KEY not set; using mock LLM provider",
                 ),
             );
         }
@@ -212,6 +223,28 @@ fn build_asr_client(session_id: &str) -> Result<(Box<dyn StreamingAsrClient>, bo
         }
         _ => Ok((Box::new(MockAsrClient::new(session_id)), true)),
     }
+}
+
+fn build_reply_client() -> Result<(Box<dyn StreamingReplyClient>, bool), String> {
+    build_reply_client_from_api_key(std::env::var("OPENAI_API_KEY").ok())
+}
+
+fn build_reply_client_from_api_key(
+    api_key: Option<String>,
+) -> Result<(Box<dyn StreamingReplyClient>, bool), String> {
+    match api_key {
+        Some(api_key) if !api_key.trim().is_empty() => {
+            let client = OpenAiReplyClient::connect(OpenAiReplyConfig::from_api_key(api_key))
+                .map_err(|err| err.to_string())?;
+            Ok((Box::new(client), false))
+        }
+        _ => Ok((Box::new(MockReplyClient), true)),
+    }
+}
+
+pub fn reply_provider_name_for_test(api_key: Option<String>) -> &'static str {
+    let (client, _) = build_reply_client_from_api_key(api_key).expect("reply provider");
+    client.name()
 }
 
 struct BridgeHandle {

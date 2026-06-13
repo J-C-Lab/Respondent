@@ -5,15 +5,21 @@ use respondent_lib::asr::mock::MockAsrClient;
 use respondent_lib::asr::openai_realtime::{
     OpenAiRealtimeAsrClient, OpenAiRealtimeConfig, RealtimeTransport,
 };
-use respondent_lib::llm::client::{ReplyEvent, StreamingReplyClient};
+use respondent_lib::llm::client::{LlmError, ReplyEvent, ReplyRequest, StreamingReplyClient};
 use respondent_lib::llm::mock::MockReplyClient;
+use respondent_lib::llm::openai_responses::{
+    OpenAiReplyClient, OpenAiReplyConfig, ResponsesEventStream, ResponsesTransport,
+};
 use serde_json::Value;
+use std::sync::Arc;
 
 // The Rust provider events must serialize to the exact wire shape the
 // frontend's isRealtimeEvent guard accepts: a "type" tag plus camelCase
 // fields (sessionId, receivedAtMs, ...). snake_case would be rejected.
 
 struct ContractTransport;
+struct ContractResponsesTransport;
+struct EmptyResponsesStream;
 
 impl RealtimeTransport for ContractTransport {
     fn send_json(&mut self, _value: Value) -> Result<(), AsrError> {
@@ -26,6 +32,22 @@ impl RealtimeTransport for ContractTransport {
 
     fn close(&mut self) -> Result<(), AsrError> {
         Ok(())
+    }
+}
+
+impl ResponsesTransport for ContractResponsesTransport {
+    fn stream(
+        &self,
+        _config: &OpenAiReplyConfig,
+        _request: &ReplyRequest,
+    ) -> Result<Box<dyn ResponsesEventStream>, LlmError> {
+        Ok(Box::new(EmptyResponsesStream))
+    }
+}
+
+impl ResponsesEventStream for EmptyResponsesStream {
+    fn next_event(&mut self) -> Result<Option<Value>, LlmError> {
+        Ok(None)
     }
 }
 
@@ -79,4 +101,10 @@ fn mock_clients_report_their_names() {
     .expect("openai client");
     assert_eq!(openai.name(), "openai-realtime-asr");
     assert_eq!(MockReplyClient.name(), "mock-llm");
+    let openai_reply = OpenAiReplyClient::with_transport(
+        OpenAiReplyConfig::from_api_key("test-key"),
+        Arc::new(ContractResponsesTransport),
+    )
+    .expect("openai reply client");
+    assert_eq!(openai_reply.name(), "openai-responses-llm");
 }
