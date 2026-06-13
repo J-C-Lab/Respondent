@@ -13,6 +13,7 @@ fn request() -> ReplyRequest {
         transcript: "hi".into(),
         context: vec!["hi".into()],
         document_context: None,
+        reply_style: None,
     }
 }
 

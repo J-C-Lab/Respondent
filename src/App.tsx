@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Brain,
   ChevronDown,
   ChevronUp,
   Copy,
-  FileText,
   History,
+  MessageSquareText,
   Pause,
   Play,
   Settings,
@@ -15,6 +16,7 @@ import { AppearancePanel } from "./components/AppearancePanel";
 import { ConversationHistoryPanel, type ExportStatus } from "./components/ConversationHistoryPanel";
 import { DocumentsPanel } from "./components/DocumentsPanel";
 import { MarkdownContent } from "./components/MarkdownContent";
+import { ReplyStylePanel } from "./components/ReplyStylePanel";
 import { SaveSessionPanel } from "./components/SaveSessionPanel";
 import { ProviderPanel, type ProviderForm } from "./components/ProviderPanel";
 import { validateProviderForm } from "./domain/providerFormValidation";
@@ -49,11 +51,12 @@ import {
   type DialogWindowKind,
 } from "./services/dialogWindows";
 import {
+  hydrateAppearanceSettings,
   listenAppearanceSettings,
   publishAppearanceSettings,
   readAppearanceSettings,
 } from "./services/appearanceBridge";
-import { buildAppearanceShellStyle } from "./state/appearanceSettings";
+import { buildAppearanceShellStyle, normalizeAppearanceSettings, type AppearanceSettings } from "./state/appearanceSettings";
 import {
   isTauriRuntime,
   listenNativeRealtimeEvents,
@@ -199,6 +202,7 @@ function getDialogKind(): DialogWindowKind | null {
     kind === "appearance" ||
     kind === "conversation-history" ||
     kind === "providers" ||
+    kind === "reply-style" ||
     kind === "save-session" ||
     kind === "documents"
   ) {
@@ -241,6 +245,7 @@ export default function App() {
   const [documentsOpen, setDocumentsOpen] = useState(false);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [replyStyleOpen, setReplyStyleOpen] = useState(false);
   const [windowOpacity, setWindowOpacity] = useState(
     () => readAppearanceSettings().windowOpacity,
   );
@@ -250,7 +255,6 @@ export default function App() {
   const [appearanceTheme, setAppearanceTheme] = useState<
     "dark" | "light"
   >(() => readAppearanceSettings().appearanceTheme);
-  const skipAppearancePublishRef = useRef(false);
   const [providerForm, setProviderForm] = useState<ProviderForm>(() =>
     defaultProviderForm(),
   );
@@ -269,6 +273,7 @@ export default function App() {
   const isTransitioningRef = useRef(false);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const mountedRef = useRef(true);
+  const appearanceInteractionRef = useRef(false);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -304,6 +309,24 @@ export default function App() {
     windowBlur,
     appearanceTheme,
   });
+
+  function applyAppearanceSettings(settings: AppearanceSettings) {
+    setWindowOpacity(settings.windowOpacity);
+    setWindowBlur(settings.windowBlur);
+    setAppearanceTheme(settings.appearanceTheme);
+  }
+
+  function commitAppearanceSettings(update: Partial<AppearanceSettings>) {
+    appearanceInteractionRef.current = true;
+    const next = normalizeAppearanceSettings({
+      windowOpacity,
+      windowBlur,
+      appearanceTheme,
+      ...update,
+    });
+    applyAppearanceSettings(next);
+    void publishAppearanceSettings(next);
+  }
 
   useEffect(() => {
     document.documentElement.classList.toggle(
@@ -348,10 +371,7 @@ export default function App() {
     let dispose = () => {};
 
     void listenAppearanceSettings((settings) => {
-      skipAppearancePublishRef.current = true;
-      setWindowOpacity(settings.windowOpacity);
-      setWindowBlur(settings.windowBlur);
-      setAppearanceTheme(settings.appearanceTheme);
+      applyAppearanceSettings(settings);
     }).then((unlisten) => {
       dispose = unlisten;
     });
@@ -360,17 +380,15 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (skipAppearancePublishRef.current) {
-      skipAppearancePublishRef.current = false;
-      return;
-    }
+    if (!isTauriRuntime()) return;
 
-    void publishAppearanceSettings({
-      windowOpacity,
-      windowBlur,
-      appearanceTheme,
-    });
-  }, [appearanceTheme, windowBlur, windowOpacity]);
+    void hydrateAppearanceSettings(readAppearanceSettings(), Boolean(dialogKind))
+      .then((settings) => {
+        if (appearanceInteractionRef.current) return;
+        applyAppearanceSettings(settings);
+      })
+      .catch(() => {});
+  }, [dialogKind]);
 
   useEffect(() => {
     void loadProviderProfiles().catch((error) => {
@@ -866,9 +884,15 @@ export default function App() {
             windowOpacity={windowOpacity}
             windowBlur={windowBlur}
             appearanceTheme={appearanceTheme}
-            onWindowOpacityChange={setWindowOpacity}
-            onWindowBlurChange={setWindowBlur}
-            onAppearanceThemeChange={setAppearanceTheme}
+            onWindowOpacityChange={(value) =>
+              commitAppearanceSettings({ windowOpacity: value })
+            }
+            onWindowBlurChange={(value) =>
+              commitAppearanceSettings({ windowBlur: value })
+            }
+            onAppearanceThemeChange={(theme) =>
+              commitAppearanceSettings({ appearanceTheme: theme })
+            }
             onClose={() => void closeCurrentDialogWindow()}
           />
         ) : null}
@@ -900,6 +924,13 @@ export default function App() {
             onDeleteProfile={(profileId) =>
               void deleteSavedProviderProfile(profileId)
             }
+            onClose={() => void closeCurrentDialogWindow()}
+          />
+        ) : null}
+
+        {dialogKind === "reply-style" ? (
+          <ReplyStylePanel
+            className="modalPanel replyStylePanel detachedPanel"
             onClose={() => void closeCurrentDialogWindow()}
           />
         ) : null}
@@ -979,10 +1010,42 @@ export default function App() {
           <button
             type="button"
             onClick={() => {
+              openFloatingDialog("reply-style", () => {
+                setReplyStyleOpen((value) => !value);
+                setConfigOpen(false);
+                setAppearanceOpen(false);
+                setDocumentsOpen(false);
+                setConversationHistoryOpen(false);
+              });
+            }}
+            title="回复风格"
+          >
+            <MessageSquareText size={16} />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              openFloatingDialog("documents", () => {
+                setDocumentsOpen((v) => !v);
+                setConfigOpen(false);
+                setAppearanceOpen(false);
+                setReplyStyleOpen(false);
+                setConversationHistoryOpen(false);
+              });
+            }}
+            title="文档知识库"
+          >
+            <Brain size={16} />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
               openFloatingDialog("conversation-history", () => {
                 setConversationHistoryOpen((value) => !value);
                 setAppearanceOpen(false);
                 setConfigOpen(false);
+                setReplyStyleOpen(false);
+                setDocumentsOpen(false);
               });
             }}
             title="会话历史"
@@ -995,6 +1058,9 @@ export default function App() {
               openFloatingDialog("appearance", () => {
                 setAppearanceOpen((value) => !value);
                 setConfigOpen(false);
+                setReplyStyleOpen(false);
+                setDocumentsOpen(false);
+                setConversationHistoryOpen(false);
               });
             }}
             title="外观设置"
@@ -1007,24 +1073,14 @@ export default function App() {
               openFloatingDialog("providers", () => {
                 setConfigOpen((value) => !value);
                 setAppearanceOpen(false);
+                setReplyStyleOpen(false);
+                setDocumentsOpen(false);
+                setConversationHistoryOpen(false);
               });
             }}
             title="服务商配置"
           >
             <Settings size={16} />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              openFloatingDialog("documents", () => {
-                setDocumentsOpen((v) => !v);
-                setConfigOpen(false);
-                setAppearanceOpen(false);
-              });
-            }}
-            title="文档知识库"
-          >
-            <FileText size={16} />
           </button>
         </div>
       </header>
@@ -1036,10 +1092,25 @@ export default function App() {
             windowOpacity={windowOpacity}
             windowBlur={windowBlur}
             appearanceTheme={appearanceTheme}
-            onWindowOpacityChange={setWindowOpacity}
-            onWindowBlurChange={setWindowBlur}
-            onAppearanceThemeChange={setAppearanceTheme}
+            onWindowOpacityChange={(value) =>
+              commitAppearanceSettings({ windowOpacity: value })
+            }
+            onWindowBlurChange={(value) =>
+              commitAppearanceSettings({ windowBlur: value })
+            }
+            onAppearanceThemeChange={(theme) =>
+              commitAppearanceSettings({ appearanceTheme: theme })
+            }
             onClose={() => setAppearanceOpen(false)}
+          />
+        </div>
+      ) : null}
+
+      {!isTauriRuntime() && replyStyleOpen ? (
+        <div className="modalLayer">
+          <ReplyStylePanel
+            className="modalPanel replyStylePanel"
+            onClose={() => setReplyStyleOpen(false)}
           />
         </div>
       ) : null}

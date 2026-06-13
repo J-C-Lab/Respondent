@@ -1,8 +1,12 @@
 import { emit, listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import {
   APPEARANCE_SETTINGS_BROADCAST_CHANNEL,
   APPEARANCE_SETTINGS_EVENT,
+  DEFAULT_APPEARANCE_SETTINGS,
   type AppearanceSettings,
+  appearanceSettingsEqual,
+  normalizeAppearanceSettings,
   persistAppearanceSettings,
   loadAppearanceSettings,
 } from "../state/appearanceSettings";
@@ -25,16 +29,25 @@ function getAppearanceBroadcastChannel(): BroadcastChannel | null {
   return appearanceBroadcastChannel;
 }
 
+export async function fetchAppearanceSettings(): Promise<AppearanceSettings> {
+  if (isTauriRuntime()) {
+    return invoke<AppearanceSettings>("get_appearance_settings");
+  }
+  return readAppearanceSettings();
+}
+
 export async function publishAppearanceSettings(
   settings: AppearanceSettings,
 ): Promise<AppearanceSettings> {
   const normalized = persistAppearanceSettings(settings);
-  getAppearanceBroadcastChannel()?.postMessage(normalized);
 
   if (isTauriRuntime()) {
-    await emit(APPEARANCE_SETTINGS_EVENT, normalized);
+    return invoke<AppearanceSettings>("publish_appearance_settings", {
+      payload: normalized,
+    });
   }
 
+  getAppearanceBroadcastChannel()?.postMessage(normalized);
   return normalized;
 }
 
@@ -82,15 +95,46 @@ export async function listenAppearanceSettings(
   };
 }
 
+export async function hydrateAppearanceSettings(
+  localSettings: AppearanceSettings,
+  dialogWindow: boolean,
+): Promise<AppearanceSettings> {
+  if (!isTauriRuntime()) {
+    return localSettings;
+  }
+
+  const remote = await fetchAppearanceSettings();
+  const shouldSeedRemote =
+    !dialogWindow &&
+    appearanceSettingsEqual(remote, DEFAULT_APPEARANCE_SETTINGS) &&
+    !appearanceSettingsEqual(localSettings, DEFAULT_APPEARANCE_SETTINGS);
+
+  if (shouldSeedRemote) {
+    return publishAppearanceSettings(localSettings);
+  }
+
+  persistAppearanceSettings(remote);
+  return remote;
+}
+
 function normalizeIncoming(
   value: AppearanceSettings | null | undefined,
 ): AppearanceSettings {
-  const current = readAppearanceSettings();
-  if (!value) return current;
-  const next = {
-    windowOpacity: value.windowOpacity ?? current.windowOpacity,
-    windowBlur: value.windowBlur ?? current.windowBlur,
-    appearanceTheme: value.appearanceTheme ?? current.appearanceTheme,
+  if (!value) {
+    return readAppearanceSettings();
+  }
+
+  const raw = value as AppearanceSettings & {
+    appearance_theme?: unknown;
+    window_opacity?: unknown;
+    window_blur?: unknown;
   };
-  return persistAppearanceSettings(next);
+
+  return persistAppearanceSettings(
+    normalizeAppearanceSettings({
+      windowOpacity: raw.windowOpacity ?? raw.window_opacity,
+      windowBlur: raw.windowBlur ?? raw.window_blur,
+      appearanceTheme: raw.appearanceTheme ?? raw.appearance_theme,
+    }),
+  );
 }

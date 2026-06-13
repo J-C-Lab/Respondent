@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::reply_style_settings::ReplyStyleSettings;
+
 #[derive(Debug, Clone)]
 pub struct ReplyRequest {
     pub session_id: String,
@@ -7,6 +9,7 @@ pub struct ReplyRequest {
     pub transcript: String,
     pub context: Vec<String>,
     pub document_context: Option<String>,
+    pub reply_style: Option<ReplyStyleSettings>,
 }
 
 /// Streaming reply events. The wire shape mirrors the frontend RealtimeEvent

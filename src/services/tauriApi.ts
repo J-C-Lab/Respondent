@@ -180,3 +180,19 @@ export async function unloadDocument(name: string): Promise<void> {
 export async function listDocuments(): Promise<DocumentSummary[]> {
   return invoke<DocumentSummary[]>("list_documents");
 }
+
+// ── Reply style ────────────────────────────────────────────────────────────────
+
+export type ReplyStyleSettings = {
+  userPrompt: string;
+};
+
+export async function getReplyStyleSettings(): Promise<ReplyStyleSettings> {
+  return invoke<ReplyStyleSettings>("get_reply_style_settings");
+}
+
+export async function saveReplyStyleSettings(
+  settings: ReplyStyleSettings,
+): Promise<ReplyStyleSettings> {
+  return invoke<ReplyStyleSettings>("save_reply_style_settings", { settings });
+}

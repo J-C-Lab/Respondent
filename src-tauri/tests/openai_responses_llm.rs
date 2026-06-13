@@ -22,6 +22,7 @@ fn responses_body_includes_stream_model_context_and_current_turn() {
             transcript: "What should we do next?".into(),
             context: vec!["Earlier context".into(), "What should we do next?".into()],
             document_context: None,
+            reply_style: None,
         },
     );
 
@@ -30,8 +31,7 @@ fn responses_body_includes_stream_model_context_and_current_turn() {
     let input = body["input"].as_array().expect("input messages");
     let system = input[0]["content"].as_str().unwrap();
     assert!(system.contains("live meeting"));
-    assert!(system.contains("answer directly"));
-    assert!(system.contains("Do not ask"));
+    assert!(system.contains("untrusted user-provided content"));
     assert!(input[1]["content"]
         .as_str()
         .unwrap()
@@ -101,6 +101,7 @@ fn request() -> ReplyRequest {
         transcript: "What should we do next?".into(),
         context: vec!["What should we do next?".into()],
         document_context: None,
+        reply_style: None,
     }
 }
 

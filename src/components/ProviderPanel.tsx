@@ -865,7 +865,7 @@ export function ProviderPanel({
 
           <button
 
-            className="primaryButton"
+            className="saveButton"
 
             type="button"
 

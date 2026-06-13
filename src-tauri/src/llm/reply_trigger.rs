@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use crate::asr::client::AsrEvent;
 use crate::docs::format_document_context;
 use crate::docs::store::DocumentStore;
+use crate::reply_style_settings::ReplyStyleSettingsStore;
 
 use super::client::ReplyRequest;
 
@@ -23,16 +24,22 @@ pub struct ReplyTrigger {
     context: Vec<String>,
     generation_counter: u64,
     doc_store: Arc<Mutex<DocumentStore>>,
+    style_store: Arc<ReplyStyleSettingsStore>,
 }
 
 impl ReplyTrigger {
-    pub fn new(session_id: impl Into<String>, doc_store: Arc<Mutex<DocumentStore>>) -> Self {
+    pub fn new(
+        session_id: impl Into<String>,
+        doc_store: Arc<Mutex<DocumentStore>>,
+        style_store: Arc<ReplyStyleSettingsStore>,
+    ) -> Self {
         Self {
             session_id: session_id.into(),
             endpoint_armed: false,
             context: Vec::new(),
             generation_counter: 0,
             doc_store,
+            style_store,
         }
     }
 
@@ -51,12 +58,14 @@ impl ReplyTrigger {
                     self.endpoint_armed = false;
                     self.generation_counter += 1;
                     let document_context = self.retrieve_document_context(text);
+                    let reply_style = Some(self.style_store.get());
                     Some(ReplyRequest {
                         session_id: self.session_id.clone(),
                         generation_id: format!("gen-{}", self.generation_counter),
                         transcript: text.clone(),
                         context: self.context.clone(),
                         document_context,
+                        reply_style,
                     })
                 } else {
                     None
@@ -97,6 +106,14 @@ pub fn build_retrieval_query(context: &[String], transcript: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reply_style_settings::ReplyStyleSettingsStore;
+    use std::sync::Arc;
+
+    fn style_store() -> Arc<ReplyStyleSettingsStore> {
+        Arc::new(ReplyStyleSettingsStore::with_settings(
+            Default::default(),
+        ))
+    }
 
     fn armed_trigger_with_auth_doc() -> ReplyTrigger {
         let store = Arc::new(Mutex::new(DocumentStore::default()));
@@ -104,7 +121,7 @@ mod tests {
             "auth.md".into(),
             "## API Authentication\nUse Bearer token in the Authorization header. The accessToken expires after 1 hour and must be refreshed periodically.\n".into(),
         );
-        let mut trigger = ReplyTrigger::new("session-1", store);
+        let mut trigger = ReplyTrigger::new("session-1", store, style_store());
         trigger.observe(&AsrEvent::Endpoint {
             session_id: "session-1".into(),
             silence_ms: 300,
@@ -116,7 +133,7 @@ mod tests {
     #[test]
     fn no_request_without_endpoint() {
         let store = Arc::new(Mutex::new(DocumentStore::default()));
-        let mut trigger = ReplyTrigger::new("s", store);
+        let mut trigger = ReplyTrigger::new("s", store, style_store());
         let result = trigger.observe(&AsrEvent::Final {
             session_id: "s".into(),
             text: "hello".into(),
@@ -151,7 +168,7 @@ mod tests {
     #[test]
     fn no_document_context_when_store_empty() {
         let store = Arc::new(Mutex::new(DocumentStore::default()));
-        let mut trigger = ReplyTrigger::new("s", store);
+        let mut trigger = ReplyTrigger::new("s", store, style_store());
         trigger.observe(&AsrEvent::Endpoint {
             session_id: "s".into(),
             silence_ms: 300,

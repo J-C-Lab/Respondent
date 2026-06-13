@@ -95,7 +95,7 @@ export function ConversationHistoryPanel({
                   </div>
                 </div>
                 <button
-                  className="primaryButton"
+                  className="exportButton"
                   type="button"
                   onClick={() => onExportMarkdown(activeSession)}
                 >

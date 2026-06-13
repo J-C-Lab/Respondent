@@ -287,12 +287,23 @@ button:disabled {
 .dialogWindowRoot .conversationHistoryLayout,
 .dialogWindowRoot .conversationHistoryLayout *,
 .dialogWindowRoot .documentsPanelBody,
-.dialogWindowRoot .documentsPanelBody * {
+.dialogWindowRoot .documentsPanelBody *,
+.dialogWindowRoot .replyStylePanelBody,
+.dialogWindowRoot .replyStylePanelBody * {
   -webkit-app-region: no-drag;
 }
 
 .dialogWindowRoot .providerPanel.detachedPanel,
-.dialogWindowRoot .appearancePanel.detachedPanel {
+.dialogWindowRoot .appearancePanel.detachedPanel,
+.dialogWindowRoot .replyStylePanel.detachedPanel {
+  overflow: hidden;
+  height: 100%;
+  width: 100%;
+}
+
+.dialogWindowRoot .replyStylePanelBody {
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -530,19 +541,140 @@ button:disabled {
   border-top: 1px solid var(--hairline);
 }
 
-.primaryButton {
+.primaryButton,
+.saveButton {
   width: auto;
-  min-width: 68px;
+  height: 34px;
+  min-width: 96px;
   display: inline-flex;
-  gap: 7px;
-  padding: 0 13px;
-  color: #ffffff;
-  background: rgba(29, 114, 243, 0.78);
-  border-color: rgba(99, 166, 255, 0.64);
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  border-radius: 10px;
+  color: #c8e0ff;
+  border: 1px solid rgba(99, 166, 255, 0.44);
+  background: linear-gradient(
+    180deg,
+    rgba(29, 114, 243, 0.2) 0%,
+    rgba(29, 114, 243, 0.1) 100%
+  );
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 140ms ease;
 }
 
-.primaryButton:hover:not(:disabled) {
-  background: rgba(29, 114, 243, 0.9);
+.primaryButton:hover:not(:disabled),
+.saveButton:hover:not(:disabled) {
+  color: #e3f0ff;
+  border-color: rgba(99, 166, 255, 0.58);
+  background: linear-gradient(
+    180deg,
+    rgba(29, 114, 243, 0.28) 0%,
+    rgba(29, 114, 243, 0.16) 100%
+  );
+  transform: translateY(-1px);
+}
+
+.primaryButton:active:not(:disabled),
+.saveButton:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.primaryButton:disabled,
+.saveButton:disabled {
+  opacity: 0.45;
+  transform: none;
+}
+
+.exportButton {
+  width: auto;
+  height: 34px;
+  min-width: 96px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 650;
+  border-radius: 10px;
+  color: #9ec8ff;
+  border: 1px solid rgba(99, 166, 255, 0.34);
+  background: linear-gradient(
+    180deg,
+    rgba(29, 114, 243, 0.16) 0%,
+    rgba(29, 114, 243, 0.08) 100%
+  );
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 140ms ease;
+}
+
+.exportButton:hover:not(:disabled) {
+  color: #c8e0ff;
+  border-color: rgba(99, 166, 255, 0.52);
+  background: linear-gradient(
+    180deg,
+    rgba(29, 114, 243, 0.24) 0%,
+    rgba(29, 114, 243, 0.14) 100%
+  );
+  transform: translateY(-1px);
+}
+
+.exportButton:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.themeLight .saveButton,
+.themeLight .primaryButton {
+  color: #1558c0;
+  border-color: rgba(29, 114, 243, 0.36);
+  background: linear-gradient(
+    180deg,
+    rgba(29, 114, 243, 0.12) 0%,
+    rgba(29, 114, 243, 0.06) 100%
+  );
+}
+
+.themeLight .saveButton:hover:not(:disabled),
+.themeLight .primaryButton:hover:not(:disabled) {
+  color: #1249a3;
+  border-color: rgba(29, 114, 243, 0.48);
+  background: linear-gradient(
+    180deg,
+    rgba(29, 114, 243, 0.18) 0%,
+    rgba(29, 114, 243, 0.1) 100%
+  );
+}
+
+.themeLight .exportButton {
+  color: #1d72f3;
+  border-color: rgba(29, 114, 243, 0.28);
+  background: linear-gradient(
+    180deg,
+    rgba(29, 114, 243, 0.1) 0%,
+    rgba(29, 114, 243, 0.05) 100%
+  );
+}
+
+.themeLight .exportButton:hover:not(:disabled) {
+  color: #1558c0;
+  border-color: rgba(29, 114, 243, 0.42);
+  background: linear-gradient(
+    180deg,
+    rgba(29, 114, 243, 0.16) 0%,
+    rgba(29, 114, 243, 0.08) 100%
+  );
 }
 
 .secondaryButton,
@@ -1247,6 +1379,145 @@ button:disabled {
 .providerSectionIcon.saved {
   color: #b6a0ff;
   background: rgba(140, 110, 255, 0.14);
+}
+
+.replyStylePanel {
+  width: min(480px, calc(100vw - 28px));
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.replyStylePanel.modalPanel {
+  overflow: hidden;
+}
+
+.replyStylePanelBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  margin-top: 14px;
+  overflow: hidden;
+}
+
+.replyStyleIntro {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.replyStyleIntroIcon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  color: #8dffb8;
+  border-radius: 9px;
+  background: rgba(72, 201, 135, 0.14);
+}
+
+.replyStyleIntro p {
+  margin: 0;
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.replyStyleField {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  color: var(--soft);
+  font-size: 12px;
+}
+
+.replyStyleTextarea {
+  box-sizing: border-box;
+  width: 100%;
+  flex: 1;
+  min-height: 96px;
+  padding: 10px 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  resize: none;
+  overflow: hidden;
+}
+
+.replyStyleHint {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.replyStyleExamples {
+  display: grid;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.replyStyleExamplesLabel {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.replyStyleExampleButtons {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.replyStyleExampleButton {
+  box-sizing: border-box;
+  width: 100%;
+  height: auto;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--soft);
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.replyStyleExampleButton:hover {
+  border-color: rgba(99, 166, 255, 0.35);
+  color: var(--text);
+}
+
+.replyStylePanelFooter {
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.replyStyleActionButtons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .providerPanelFooter {
@@ -2057,26 +2328,6 @@ button:disabled {
 
 .saveSessionFooter {
   margin-top: auto;
-}
-
-.saveSessionPrimaryButton:not(:disabled) {
-  color: #ffffff;
-  border-color: rgba(48, 209, 88, 0.5);
-  background: linear-gradient(
-    180deg,
-    rgba(48, 209, 88, 0.95),
-    rgba(36, 170, 72, 0.95)
-  );
-  box-shadow: 0 8px 20px rgba(48, 209, 88, 0.22);
-}
-
-.saveSessionPrimaryButton:not(:disabled):hover {
-  border-color: rgba(48, 209, 88, 0.72);
-  background: linear-gradient(
-    180deg,
-    rgba(68, 226, 104, 0.98),
-    rgba(48, 209, 88, 0.98)
-  );
 }
 
 .dialogWindowRoot .saveSessionBody,

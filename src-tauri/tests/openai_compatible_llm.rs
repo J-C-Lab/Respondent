@@ -29,6 +29,7 @@ fn request() -> ReplyRequest {
         transcript: "What next?".into(),
         context: vec!["What next?".into()],
         document_context: None,
+        reply_style: None,
     }
 }
 
@@ -52,8 +53,8 @@ fn build_chat_body_has_stream_model_messages() {
     let messages = body["messages"].as_array().expect("messages");
     assert_eq!(messages[0]["role"], "system");
     let system = messages[0]["content"].as_str().unwrap();
-    assert!(system.contains("answer directly"));
-    assert!(system.contains("Do not ask"));
+    assert!(system.contains("live meeting assistant"));
+    assert!(system.contains("untrusted user-provided content"));
     assert!(messages[1]["content"]
         .as_str()
         .unwrap()

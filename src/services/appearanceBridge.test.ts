@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  hydrateAppearanceSettings,
   listenAppearanceSettings,
   publishAppearanceSettings,
 } from "./appearanceBridge";
+import { DEFAULT_APPEARANCE_SETTINGS } from "../state/appearanceSettings";
 
-const emitMock = vi.hoisted(() => vi.fn(async () => undefined));
+const invokeMock = vi.hoisted(() => vi.fn());
 const listenMock = vi.hoisted(() =>
   vi.fn(async (_event, handler: (payload: { payload: unknown }) => void) => {
     tauriHandler = handler;
@@ -14,8 +16,12 @@ const listenMock = vi.hoisted(() =>
 
 let tauriHandler: ((payload: { payload: unknown }) => void) | null = null;
 
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: invokeMock,
+}));
+
 vi.mock("@tauri-apps/api/event", () => ({
-  emit: emitMock,
+  emit: vi.fn(),
   listen: listenMock,
 }));
 
@@ -55,14 +61,23 @@ describe("appearanceBridge", () => {
   beforeEach(() => {
     vi.stubGlobal("BroadcastChannel", MockBroadcastChannel);
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      value: { invoke: vi.fn(), transformCallback: (cb: () => void) => cb },
+      value: { invoke: invokeMock, transformCallback: (cb: () => void) => cb },
       configurable: true,
+    });
+    invokeMock.mockImplementation(async (command: string, args?: { payload?: unknown }) => {
+      if (command === "get_appearance_settings") {
+        return DEFAULT_APPEARANCE_SETTINGS;
+      }
+      if (command === "publish_appearance_settings") {
+        return args?.payload;
+      }
+      return null;
     });
   });
 
   afterEach(() => {
     localStorage.clear();
-    emitMock.mockReset();
+    invokeMock.mockReset();
     listenMock.mockReset();
     tauriHandler = null;
     MockBroadcastChannel.channels.clear();
@@ -70,7 +85,9 @@ describe("appearanceBridge", () => {
     vi.unstubAllGlobals();
   });
 
-  it("broadcasts theme changes to other listeners immediately", async () => {
+  it("broadcasts theme changes to other listeners immediately in the browser", async () => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+
     const onChange = vi.fn();
     const unlisten = await listenAppearanceSettings(onChange);
 
@@ -85,9 +102,77 @@ describe("appearanceBridge", () => {
       windowBlur: 24,
       appearanceTheme: "light",
     });
-    expect(emitMock).toHaveBeenCalled();
 
     unlisten();
+  });
+
+  it("publishes through the native backend in Tauri", async () => {
+    await publishAppearanceSettings({
+      windowOpacity: 80,
+      windowBlur: 16,
+      appearanceTheme: "light",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("publish_appearance_settings", {
+      payload: {
+        windowOpacity: 80,
+        windowBlur: 16,
+        appearanceTheme: "light",
+      },
+    });
+  });
+
+  it("seeds native settings from local storage on the main window", async () => {
+    localStorage.setItem(
+      "respondent.appearance",
+      JSON.stringify({
+        windowOpacity: 86,
+        windowBlur: 18,
+        appearanceTheme: "light",
+      }),
+    );
+
+    const settings = await hydrateAppearanceSettings(
+      {
+        windowOpacity: 86,
+        windowBlur: 18,
+        appearanceTheme: "light",
+      },
+      false,
+    );
+
+    expect(settings.appearanceTheme).toBe("light");
+    expect(invokeMock).toHaveBeenCalledWith("publish_appearance_settings", {
+      payload: {
+        windowOpacity: 86,
+        windowBlur: 18,
+        appearanceTheme: "light",
+      },
+    });
+  });
+
+  it("loads native settings in dialog windows without seeding", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "get_appearance_settings") {
+        return {
+          windowOpacity: 72,
+          windowBlur: 24,
+          appearanceTheme: "light",
+        };
+      }
+      return null;
+    });
+
+    const settings = await hydrateAppearanceSettings(
+      DEFAULT_APPEARANCE_SETTINGS,
+      true,
+    );
+
+    expect(settings.appearanceTheme).toBe("light");
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "publish_appearance_settings",
+      expect.anything(),
+    );
   });
 
   it("forwards tauri appearance events to listeners", async () => {

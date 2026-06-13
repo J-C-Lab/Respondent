@@ -126,7 +126,7 @@ export function SaveSessionPanel({
           暂不保存
         </button>
         <button
-          className="primaryButton saveSessionPrimaryButton"
+          className="saveButton"
           type="button"
           onClick={onSave}
           disabled={!hasContent}

@@ -5,6 +5,7 @@ export type DialogWindowKind =
   | "appearance"
   | "conversation-history"
   | "providers"
+  | "reply-style"
   | "save-session"
   | "documents";
 
@@ -41,6 +42,14 @@ const DIALOG_SPECS: Record<DialogWindowKind, DialogWindowSpec> = {
     height: 720,
     minWidth: 520,
     minHeight: 560,
+  },
+  "reply-style": {
+    label: "dialog-reply-style",
+    title: "回复风格",
+    width: 480,
+    height: 520,
+    minWidth: 420,
+    minHeight: 480,
   },
   "save-session": {
     label: "dialog-save-session",

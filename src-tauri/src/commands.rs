@@ -9,6 +9,7 @@ use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
+use crate::appearance_settings::{AppearanceSettings, AppearanceSettingsStore};
 use crate::asr::bailian_realtime::{BailianRealtimeAsrClient, BailianRealtimeConfig};
 use crate::asr::client::{AsrEvent, StreamingAsrClient};
 use crate::asr::endpointer::EnergyEndpointer;
@@ -33,6 +34,7 @@ use crate::provider_config::{
     AsrProviderSettings, LlmProviderSettings, ProviderConfigSummary, ProviderProfileStore,
     ProviderProfilesResponse, ProviderSettings,
 };
+use crate::reply_style_settings::{ReplyStyleSettings, ReplyStyleSettingsStore};
 use crate::session::db::{EventInsert, SessionDb};
 use crate::session::export::SessionExport;
 
@@ -269,6 +271,37 @@ pub fn save_markdown_file(
 }
 
 #[tauri::command]
+pub fn get_appearance_settings(
+    state: tauri::State<'_, AppearanceSettingsStore>,
+) -> AppearanceSettings {
+    state.get()
+}
+
+#[tauri::command]
+pub fn publish_appearance_settings(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppearanceSettingsStore>,
+    payload: AppearanceSettings,
+) -> Result<AppearanceSettings, String> {
+    state.publish(&app, payload)
+}
+
+#[tauri::command]
+pub fn get_reply_style_settings(
+    state: tauri::State<'_, Arc<ReplyStyleSettingsStore>>,
+) -> ReplyStyleSettings {
+    state.get()
+}
+
+#[tauri::command]
+pub fn save_reply_style_settings(
+    state: tauri::State<'_, Arc<ReplyStyleSettingsStore>>,
+    settings: ReplyStyleSettings,
+) -> Result<ReplyStyleSettings, String> {
+    state.save(settings)
+}
+
+#[tauri::command]
 pub fn get_provider_config(
     state: tauri::State<'_, ProviderConfigStore>,
 ) -> Result<ProviderConfigSummary, String> {
@@ -460,10 +493,11 @@ impl SessionRuntime {
         let asr_bridge = spawn_asr_bridge(app.clone(), asr_events, reply_asr_tx, db.clone());
         let (reply_client, using_mock_llm) = build_reply_client(&provider_settings)?;
         let doc_store = app.state::<Arc<Mutex<DocumentStore>>>().inner().clone();
+        let style_store = app.state::<Arc<ReplyStyleSettingsStore>>().inner().clone();
         let reply = ReplySession::start(
             reply_asr_rx,
             reply_client,
-            ReplyTrigger::new(session_id.clone(), doc_store),
+            ReplyTrigger::new(session_id.clone(), doc_store, style_store),
         );
         let reply_bridge = spawn_reply_bridge(app.clone(), reply.events(), db);
 
