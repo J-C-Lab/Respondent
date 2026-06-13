@@ -1,8 +1,12 @@
 use respondent_lib::commands::{
     end_session_for_test, export_session_markdown_for_test, export_session_text_for_test,
-    reply_provider_name_for_test, start_session_for_test, SystemStatusEvent,
+    resolve_reply_provider_name, start_session_for_test, SystemStatusEvent,
 };
 use respondent_lib::session::export::{SessionExport, SessionExportEvent};
+
+fn env(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
 
 #[test]
 fn start_session_rejects_empty_title() {
@@ -43,15 +47,31 @@ fn system_status_serializes_to_frontend_contract() {
 }
 
 #[test]
-fn reply_provider_selection_uses_mock_without_api_key() {
-    assert_eq!(reply_provider_name_for_test(None), "mock-llm");
+fn provider_defaults_to_mock_without_keys() {
+    assert_eq!(resolve_reply_provider_name(&env(&[])), "mock-llm");
 }
 
 #[test]
-fn reply_provider_selection_uses_openai_with_api_key() {
+fn provider_openai_with_key() {
     assert_eq!(
-        reply_provider_name_for_test(Some("test-key".to_string())),
+        resolve_reply_provider_name(&env(&[("OPENAI_API_KEY", "k")])),
         "openai-responses-llm"
+    );
+}
+
+#[test]
+fn provider_dashscope_with_key() {
+    assert_eq!(
+        resolve_reply_provider_name(&env(&[("LLM_PROVIDER", "dashscope"), ("DASHSCOPE_API_KEY", "k")])),
+        "openai-compatible-llm"
+    );
+}
+
+#[test]
+fn provider_compatible_missing_config_falls_back_to_mock() {
+    assert_eq!(
+        resolve_reply_provider_name(&env(&[("LLM_PROVIDER", "siliconflow")])),
+        "mock-llm"
     );
 }
 

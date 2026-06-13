@@ -18,6 +18,7 @@ use crate::audio::capture::LoopbackCapture;
 use crate::audio::devices::{list_output_devices, OutputDevice};
 use crate::llm::client::{ReplyEvent, StreamingReplyClient};
 use crate::llm::mock::MockReplyClient;
+use crate::llm::openai_compatible::{OpenAiCompatibleReplyClient, ProviderConfig};
 use crate::llm::openai_responses::{OpenAiReplyClient, OpenAiReplyConfig};
 use crate::llm::reply_trigger::ReplyTrigger;
 use crate::llm::session::ReplySession;
@@ -271,7 +272,7 @@ impl SessionRuntime {
                 &app,
                 SystemStatusEvent::info(
                     Some(session_id),
-                    "OPENAI_API_KEY not set; using mock LLM provider",
+                    "No LLM provider configured; using mock LLM provider",
                 ),
             );
         }
@@ -308,26 +309,86 @@ fn build_asr_client(session_id: &str) -> Result<(Box<dyn StreamingAsrClient>, bo
     }
 }
 
-fn build_reply_client() -> Result<(Box<dyn StreamingReplyClient>, bool), String> {
-    build_reply_client_from_api_key(std::env::var("OPENAI_API_KEY").ok())
-}
-
-fn build_reply_client_from_api_key(
-    api_key: Option<String>,
+/// Build the reply client from an env-like map. Returns (client, using_mock).
+pub fn resolve_reply_client(
+    env: &HashMap<String, String>,
 ) -> Result<(Box<dyn StreamingReplyClient>, bool), String> {
-    match api_key {
-        Some(api_key) if !api_key.trim().is_empty() => {
-            let client = OpenAiReplyClient::connect(OpenAiReplyConfig::from_api_key(api_key))
-                .map_err(|err| err.to_string())?;
+    let provider = env
+        .get("LLM_PROVIDER")
+        .map(|p| p.trim().to_lowercase())
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "openai".to_string());
+
+    let get = |key: &str| env.get(key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+
+    let compatible = |base_default: &str, key: Option<String>, model_default: &str, base_key: &str, model_key: &str| -> Option<ProviderConfig> {
+        let api_key = key?;
+        let base_url = get(base_key).unwrap_or_else(|| base_default.to_string());
+        let model = get(model_key).unwrap_or_else(|| model_default.to_string());
+        Some(ProviderConfig { base_url, api_key, model })
+    };
+
+    let cfg: Option<ProviderConfig> = match provider.as_str() {
+        "openai" => {
+            return match get("OPENAI_API_KEY") {
+                Some(key) => {
+                    let client = OpenAiReplyClient::connect(OpenAiReplyConfig::from_api_key(key))
+                        .map_err(|e| e.to_string())?;
+                    Ok((Box::new(client), false))
+                }
+                None => Ok((Box::new(MockReplyClient), true)),
+            };
+        }
+        "dashscope" => compatible(
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            get("DASHSCOPE_API_KEY"),
+            "qwen-plus",
+            "DASHSCOPE_BASE_URL",
+            "DASHSCOPE_LLM_MODEL",
+        ),
+        "zhipu" => compatible(
+            "https://open.bigmodel.cn/api/paas/v4",
+            get("ZHIPU_API_KEY").or_else(|| get("ZAI_API_KEY")),
+            "glm-4-plus",
+            "ZHIPU_BASE_URL",
+            "ZHIPU_LLM_MODEL",
+        ),
+        "siliconflow" => compatible(
+            "https://api.siliconflow.cn/v1",
+            get("SILICONFLOW_API_KEY"),
+            "Qwen/Qwen3-8B",
+            "SILICONFLOW_BASE_URL",
+            "SILICONFLOW_LLM_MODEL",
+        ),
+        "openai_compatible" => {
+            match (get("OPENAI_COMPATIBLE_API_KEY"), get("OPENAI_COMPATIBLE_BASE_URL"), get("OPENAI_COMPATIBLE_MODEL")) {
+                (Some(api_key), Some(base_url), Some(model)) => Some(ProviderConfig { base_url, api_key, model }),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+
+    match cfg {
+        Some(config) => {
+            let client = OpenAiCompatibleReplyClient::connect(config).map_err(|e| e.to_string())?;
             Ok((Box::new(client), false))
         }
-        _ => Ok((Box::new(MockReplyClient), true)),
+        None => Ok((Box::new(MockReplyClient), true)),
     }
 }
 
-pub fn reply_provider_name_for_test(api_key: Option<String>) -> &'static str {
-    let (client, _) = build_reply_client_from_api_key(api_key).expect("reply provider");
+pub fn resolve_reply_provider_name(env: &HashMap<String, String>) -> &'static str {
+    let (client, _) = resolve_reply_client(env).expect("resolve reply client");
     client.name()
+}
+
+fn current_env() -> HashMap<String, String> {
+    std::env::vars().collect()
+}
+
+fn build_reply_client() -> Result<(Box<dyn StreamingReplyClient>, bool), String> {
+    resolve_reply_client(&current_env())
 }
 
 struct BridgeHandle {
