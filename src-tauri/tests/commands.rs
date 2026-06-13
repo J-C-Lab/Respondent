@@ -1,6 +1,8 @@
 use respondent_lib::commands::{
-    end_session_for_test, reply_provider_name_for_test, start_session_for_test, SystemStatusEvent,
+    end_session_for_test, export_session_markdown_for_test, export_session_text_for_test,
+    reply_provider_name_for_test, start_session_for_test, SystemStatusEvent,
 };
+use respondent_lib::session::export::{SessionExport, SessionExportEvent};
 
 #[test]
 fn start_session_rejects_empty_title() {
@@ -51,4 +53,37 @@ fn reply_provider_selection_uses_openai_with_api_key() {
         reply_provider_name_for_test(Some("test-key".to_string())),
         "openai-responses-llm"
     );
+}
+
+#[test]
+fn export_helpers_format_markdown_and_plain_text() {
+    let export = SessionExport {
+        id: "session-1".into(),
+        title: "Meeting".into(),
+        started_at: "2026-06-13T00:00:00Z".into(),
+        ended_at: Some("2026-06-13T00:01:00Z".into()),
+        events: vec![
+            SessionExportEvent {
+                event_type: "transcript".into(),
+                text: "hello".into(),
+                is_final: true,
+                started_at_ms: 0,
+                ended_at_ms: 300,
+            },
+            SessionExportEvent {
+                event_type: "suggestion".into(),
+                text: "ask about timing".into(),
+                is_final: true,
+                started_at_ms: 300,
+                ended_at_ms: 300,
+            },
+        ],
+    };
+
+    let markdown = export_session_markdown_for_test(&export);
+    let text = export_session_text_for_test(&export);
+
+    assert!(markdown.contains("## Meeting"));
+    assert!(markdown.contains("[00:00.300] Suggestion: ask about timing"));
+    assert!(text.contains("Transcript: hello"));
 }

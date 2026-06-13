@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -6,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use serde::Serialize;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 use crate::asr::client::{AsrEvent, StreamingAsrClient};
 use crate::asr::endpointer::EnergyEndpointer;
@@ -20,6 +21,8 @@ use crate::llm::mock::MockReplyClient;
 use crate::llm::openai_responses::{OpenAiReplyClient, OpenAiReplyConfig};
 use crate::llm::reply_trigger::ReplyTrigger;
 use crate::llm::session::ReplySession;
+use crate::session::db::{EventInsert, SessionDb};
+use crate::session::export::SessionExport;
 
 pub const REALTIME_EVENT_NAME: &str = "realtime.event";
 const BRIDGE_WAIT: Duration = Duration::from_millis(100);
@@ -60,6 +63,46 @@ pub struct SessionManager {
     sessions: Mutex<HashMap<String, SessionRuntime>>,
 }
 
+#[derive(Clone)]
+pub struct PersistentSessionDb {
+    inner: Arc<Mutex<SessionDb>>,
+}
+
+impl PersistentSessionDb {
+    pub fn open(app: &tauri::AppHandle) -> Result<Self, String> {
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|err| format!("Resolve app data directory failed: {err}"))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|err| format!("Create app data directory failed: {err}"))?;
+        Self::open_path(dir.join("respondent.sqlite3"))
+    }
+
+    pub fn open_path(path: PathBuf) -> Result<Self, String> {
+        let db = SessionDb::open(&path).map_err(|err| err.to_string())?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(db)),
+        })
+    }
+
+    #[cfg(test)]
+    pub fn open_in_memory_for_test() -> Result<Self, String> {
+        let db = SessionDb::open_in_memory().map_err(|err| err.to_string())?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(db)),
+        })
+    }
+
+    fn with_db<T>(&self, f: impl FnOnce(&SessionDb) -> Result<T, String>) -> Result<T, String> {
+        let db = self
+            .inner
+            .lock()
+            .map_err(|_| "Session database lock failed".to_string())?;
+        f(&db)
+    }
+}
+
 #[tauri::command]
 pub fn list_audio_output_devices() -> Vec<OutputDevice> {
     list_output_devices()
@@ -69,12 +112,29 @@ pub fn list_audio_output_devices() -> Vec<OutputDevice> {
 pub fn start_session(
     app: tauri::AppHandle,
     state: tauri::State<'_, SessionManager>,
+    db: tauri::State<'_, PersistentSessionDb>,
     title: String,
     output_device_id: String,
 ) -> Result<String, String> {
     validate_start_session(&title, &output_device_id)?;
     let session_id = new_session_id();
-    let runtime = SessionRuntime::start(app.clone(), session_id.clone(), output_device_id)?;
+    db.with_db(|db| {
+        db.start_session_with_id(&session_id, &title, &output_device_id)
+            .map_err(|err| err.to_string())
+    })?;
+    let runtime_result = SessionRuntime::start(
+        app.clone(),
+        session_id.clone(),
+        output_device_id,
+        db.inner().clone(),
+    );
+    let runtime = match runtime_result {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            let _ = db.with_db(|db| db.end_session(&session_id).map_err(|err| err.to_string()));
+            return Err(err);
+        }
+    };
     {
         let mut sessions = state
             .inner()
@@ -93,6 +153,7 @@ pub fn start_session(
 #[tauri::command]
 pub fn end_session(
     state: tauri::State<'_, SessionManager>,
+    db: tauri::State<'_, PersistentSessionDb>,
     session_id: String,
 ) -> Result<(), String> {
     validate_session_id(&session_id)?;
@@ -107,7 +168,28 @@ pub fn end_session(
     if let Some(runtime) = runtime {
         runtime.stop();
     }
+    db.with_db(|db| db.end_session(&session_id).map_err(|err| err.to_string()))?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn export_session_markdown(
+    state: tauri::State<'_, PersistentSessionDb>,
+    session_id: String,
+) -> Result<String, String> {
+    validate_session_id(&session_id)?;
+    let export = state.with_db(|db| db.load_export(&session_id).map_err(|err| err.to_string()))?;
+    Ok(format_session_markdown(&export))
+}
+
+#[tauri::command]
+pub fn export_session_text(
+    state: tauri::State<'_, PersistentSessionDb>,
+    session_id: String,
+) -> Result<String, String> {
+    validate_session_id(&session_id)?;
+    let export = state.with_db(|db| db.load_export(&session_id).map_err(|err| err.to_string()))?;
+    Ok(format_session_text(&export))
 }
 
 pub fn start_session_for_test(title: String, output_device_id: String) -> Result<String, String> {
@@ -153,6 +235,7 @@ impl SessionRuntime {
         app: tauri::AppHandle,
         session_id: String,
         output_device_id: String,
+        db: PersistentSessionDb,
     ) -> Result<Self, String> {
         let capture = LoopbackCapture::start(&output_device_id).map_err(|err| err.to_string())?;
         let frames = capture.receiver();
@@ -165,14 +248,14 @@ impl SessionRuntime {
         );
         let asr_events = transcription.events();
         let (reply_asr_tx, reply_asr_rx) = unbounded::<AsrEvent>();
-        let asr_bridge = spawn_asr_bridge(app.clone(), asr_events, reply_asr_tx);
+        let asr_bridge = spawn_asr_bridge(app.clone(), asr_events, reply_asr_tx, db.clone());
         let (reply_client, using_mock_llm) = build_reply_client()?;
         let reply = ReplySession::start(
             reply_asr_rx,
             reply_client,
             ReplyTrigger::new(session_id.clone()),
         );
-        let reply_bridge = spawn_reply_bridge(app.clone(), reply.events());
+        let reply_bridge = spawn_reply_bridge(app.clone(), reply.events(), db);
 
         if using_mock_asr {
             emit_status(
@@ -263,6 +346,7 @@ fn spawn_asr_bridge(
     app: tauri::AppHandle,
     events: Receiver<AsrEvent>,
     reply_tx: Sender<AsrEvent>,
+    db: PersistentSessionDb,
 ) -> BridgeHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
@@ -273,6 +357,7 @@ fn spawn_asr_bridge(
                 match events.recv_timeout(BRIDGE_WAIT) {
                     Ok(event) => {
                         let _ = app.emit(REALTIME_EVENT_NAME, event.clone());
+                        persist_asr_event(&db, &event);
                         let _ = reply_tx.send(event);
                     }
                     Err(RecvTimeoutError::Timeout) => {}
@@ -284,7 +369,11 @@ fn spawn_asr_bridge(
     BridgeHandle { stop, handle }
 }
 
-fn spawn_reply_bridge(app: tauri::AppHandle, events: Receiver<ReplyEvent>) -> BridgeHandle {
+fn spawn_reply_bridge(
+    app: tauri::AppHandle,
+    events: Receiver<ReplyEvent>,
+    db: PersistentSessionDb,
+) -> BridgeHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let handle = thread::Builder::new()
@@ -293,7 +382,8 @@ fn spawn_reply_bridge(app: tauri::AppHandle, events: Receiver<ReplyEvent>) -> Br
             while !thread_stop.load(Ordering::Acquire) {
                 match events.recv_timeout(BRIDGE_WAIT) {
                     Ok(event) => {
-                        let _ = app.emit(REALTIME_EVENT_NAME, event);
+                        let _ = app.emit(REALTIME_EVENT_NAME, event.clone());
+                        persist_reply_event(&db, &event);
                     }
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => break,
@@ -306,6 +396,118 @@ fn spawn_reply_bridge(app: tauri::AppHandle, events: Receiver<ReplyEvent>) -> Br
 
 fn emit_status(app: &tauri::AppHandle, event: SystemStatusEvent) {
     let _ = app.emit(REALTIME_EVENT_NAME, event);
+}
+
+fn persist_asr_event(db: &PersistentSessionDb, event: &AsrEvent) {
+    if let AsrEvent::Final {
+        session_id,
+        text,
+        started_at_ms,
+        ended_at_ms,
+        ..
+    } = event
+    {
+        let _ = db.with_db(|db| {
+            db.insert_event(EventInsert {
+                session_id: session_id.clone(),
+                event_type: "transcript".into(),
+                text: text.clone(),
+                is_final: true,
+                started_at_ms: *started_at_ms,
+                ended_at_ms: *ended_at_ms,
+            })
+            .map_err(|err| err.to_string())
+        });
+    }
+}
+
+fn persist_reply_event(db: &PersistentSessionDb, event: &ReplyEvent) {
+    if let ReplyEvent::Final {
+        session_id,
+        text,
+        received_at_ms,
+        ..
+    } = event
+    {
+        let _ = db.with_db(|db| {
+            db.insert_event(EventInsert {
+                session_id: session_id.clone(),
+                event_type: "suggestion".into(),
+                text: text.clone(),
+                is_final: true,
+                started_at_ms: *received_at_ms,
+                ended_at_ms: *received_at_ms,
+            })
+            .map_err(|err| err.to_string())
+        });
+    }
+}
+
+fn format_session_markdown(export: &SessionExport) -> String {
+    let ended_at = export.ended_at.as_deref().unwrap_or("In progress");
+    let mut lines = vec![
+        format!("## {}", export.title),
+        String::new(),
+        format!("- Started: {}", export.started_at),
+        format!("- Ended: {ended_at}"),
+        String::new(),
+        "### Timeline".to_string(),
+        String::new(),
+    ];
+    lines.extend(export.events.iter().map(|event| {
+        format!(
+            "- [{}] {}: {}",
+            format_timestamp(event.ended_at_ms),
+            event_label(&event.event_type),
+            event.text
+        )
+    }));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn format_session_text(export: &SessionExport) -> String {
+    let ended_at = export.ended_at.as_deref().unwrap_or("In progress");
+    let mut lines = vec![
+        export.title.clone(),
+        format!("Started: {}", export.started_at),
+        format!("Ended: {ended_at}"),
+        String::new(),
+    ];
+    lines.extend(export.events.iter().map(|event| {
+        format!(
+            "[{}] {}: {}",
+            format_timestamp(event.ended_at_ms),
+            event_label(&event.event_type),
+            event.text
+        )
+    }));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn event_label(event_type: &str) -> &'static str {
+    match event_type {
+        "transcript" => "Transcript",
+        "suggestion" => "Suggestion",
+        _ => "System",
+    }
+}
+
+fn format_timestamp(ms: i64) -> String {
+    let ms = ms.max(0);
+    let minutes = ms / 60_000;
+    let seconds = (ms % 60_000) / 1_000;
+    let milliseconds = ms % 1_000;
+    format!("{minutes:02}:{seconds:02}.{milliseconds:03}")
+}
+
+pub fn export_session_markdown_for_test(export: &SessionExport) -> String {
+    format_session_markdown(export)
+}
+
+pub fn export_session_text_for_test(export: &SessionExport) -> String {
+    format_session_text(export)
 }
 
 fn now_ms() -> i64 {
