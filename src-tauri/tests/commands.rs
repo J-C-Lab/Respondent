@@ -1,11 +1,15 @@
 use respondent_lib::commands::{
     end_session_for_test, export_session_markdown_for_test, export_session_text_for_test,
-    resolve_reply_provider_name, start_session_for_test, SystemStatusEvent,
+    resolve_asr_provider_name, resolve_reply_provider_name, start_session_for_test,
+    SystemStatusEvent,
 };
 use respondent_lib::session::export::{SessionExport, SessionExportEvent};
 
 fn env(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
-    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 #[test]
@@ -62,7 +66,10 @@ fn provider_openai_with_key() {
 #[test]
 fn provider_dashscope_with_key() {
     assert_eq!(
-        resolve_reply_provider_name(&env(&[("LLM_PROVIDER", "dashscope"), ("DASHSCOPE_API_KEY", "k")])),
+        resolve_reply_provider_name(&env(&[
+            ("LLM_PROVIDER", "dashscope"),
+            ("DASHSCOPE_API_KEY", "k")
+        ])),
         "openai-compatible-llm"
     );
 }
@@ -113,5 +120,54 @@ fn provider_zhipu_accepts_zai_api_key() {
     assert_eq!(
         resolve_reply_provider_name(&env(&[("LLM_PROVIDER", "zhipu"), ("ZAI_API_KEY", "k")])),
         "openai-compatible-llm"
+    );
+}
+
+#[test]
+fn asr_defaults_to_mock_without_keys() {
+    assert_eq!(resolve_asr_provider_name("s1", &env(&[])), "mock-asr");
+}
+
+#[test]
+fn asr_siliconflow_file_with_key() {
+    assert_eq!(
+        resolve_asr_provider_name(
+            "s1",
+            &env(&[
+                ("ASR_PROVIDER", "siliconflow_file"),
+                ("SILICONFLOW_API_KEY", "k")
+            ])
+        ),
+        "siliconflow-file-asr"
+    );
+}
+
+#[test]
+fn asr_siliconflow_file_missing_key_falls_back_to_mock() {
+    assert_eq!(
+        resolve_asr_provider_name("s1", &env(&[("ASR_PROVIDER", "siliconflow_file")])),
+        "mock-asr"
+    );
+}
+
+#[test]
+fn asr_bailian_realtime_with_key() {
+    assert_eq!(
+        resolve_asr_provider_name(
+            "s1",
+            &env(&[
+                ("ASR_PROVIDER", "bailian_realtime"),
+                ("DASHSCOPE_API_KEY", "k")
+            ])
+        ),
+        "bailian-realtime-asr"
+    );
+}
+
+#[test]
+fn asr_bailian_realtime_missing_key_falls_back_to_mock() {
+    assert_eq!(
+        resolve_asr_provider_name("s1", &env(&[("ASR_PROVIDER", "bailian_realtime")])),
+        "mock-asr"
     );
 }
