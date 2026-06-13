@@ -1,10 +1,15 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::net::TcpStream;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use serde_json::{json, Value};
+use tungstenite::client::IntoClientRequest;
+use tungstenite::http::HeaderValue;
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{connect, Message, WebSocket};
 
 use crate::audio::convert::{to_pcm16, LinearResampler};
 use crate::audio::frame::AudioFrame;
@@ -26,6 +31,63 @@ pub trait RealtimeTransport: Send {
     fn send_json(&mut self, value: Value) -> Result<(), AsrError>;
     fn try_recv_json(&mut self) -> Result<Option<Value>, AsrError>;
     fn close(&mut self) -> Result<(), AsrError>;
+}
+
+pub struct WebSocketRealtimeTransport {
+    socket: WebSocket<MaybeTlsStream<TcpStream>>,
+}
+
+impl WebSocketRealtimeTransport {
+    pub fn connect(config: &OpenAiRealtimeConfig) -> Result<Self, AsrError> {
+        if config.api_key.trim().is_empty() {
+            return Err(AsrError::Provider("missing OPENAI_API_KEY".to_string()));
+        }
+
+        let url = format!("wss://api.openai.com/v1/realtime?model={}", config.model);
+        let mut request = url
+            .into_client_request()
+            .map_err(|err| AsrError::Provider(format!("openai realtime request: {err}")))?;
+        let auth = format!("Bearer {}", config.api_key);
+        let auth = HeaderValue::from_str(&auth)
+            .map_err(|err| AsrError::Provider(format!("openai realtime auth header: {err}")))?;
+        request.headers_mut().insert("Authorization", auth);
+
+        let (mut socket, _) = connect(request)
+            .map_err(|err| AsrError::Provider(format!("openai realtime connect: {err}")))?;
+        set_socket_nonblocking(socket.get_mut())?;
+        Ok(Self { socket })
+    }
+}
+
+impl RealtimeTransport for WebSocketRealtimeTransport {
+    fn send_json(&mut self, value: Value) -> Result<(), AsrError> {
+        self.socket
+            .send(Message::Text(value.to_string().into()))
+            .map_err(|err| AsrError::Provider(format!("openai realtime send: {err}")))
+    }
+
+    fn try_recv_json(&mut self) -> Result<Option<Value>, AsrError> {
+        match self.socket.read() {
+            Ok(Message::Text(text)) => serde_json::from_str(text.as_ref())
+                .map(Some)
+                .map_err(|err| AsrError::Provider(format!("openai realtime json: {err}"))),
+            Ok(Message::Binary(_)) | Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => Ok(None),
+            Ok(Message::Frame(_)) => Ok(None),
+            Ok(Message::Close(_)) => Err(AsrError::Closed),
+            Err(tungstenite::Error::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                Ok(None)
+            }
+            Err(err) => Err(AsrError::Provider(format!(
+                "openai realtime receive: {err}"
+            ))),
+        }
+    }
+
+    fn close(&mut self) -> Result<(), AsrError> {
+        self.socket
+            .close(None)
+            .map_err(|err| AsrError::Provider(format!("openai realtime close: {err}")))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +157,17 @@ pub struct OpenAiRealtimeAsrClient {
 }
 
 impl OpenAiRealtimeAsrClient {
+    pub fn connect(session_id: String, config: OpenAiRealtimeConfig) -> Result<Self, AsrError> {
+        let transport = WebSocketRealtimeTransport::connect(&config)?;
+        Self::with_transport(session_id, config, Box::new(transport))
+    }
+
+    pub fn from_env(session_id: String) -> Result<Self, AsrError> {
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .map_err(|_| AsrError::Provider("missing OPENAI_API_KEY".to_string()))?;
+        Self::connect(session_id, OpenAiRealtimeConfig::from_api_key(api_key))
+    }
+
     pub fn with_transport(
         session_id: String,
         config: OpenAiRealtimeConfig,
@@ -311,7 +384,9 @@ impl StreamingAsrClient for OpenAiRealtimeAsrClient {
     }
 
     fn finalize(&mut self) -> Result<(), AsrError> {
-        let committed_timing = self.utterance_started_at_ms.map(|_| self.current_utterance_timing());
+        let committed_timing = self
+            .utterance_started_at_ms
+            .map(|_| self.current_utterance_timing());
         self.flush_pending_audio()?;
         self.transport
             .send_json(json!({"type": "input_audio_buffer.commit"}))?;
@@ -336,6 +411,21 @@ fn encode_pcm16_base64(samples: &[i16]) -> String {
         .flat_map(i16::to_le_bytes)
         .collect::<Vec<_>>();
     STANDARD.encode(bytes)
+}
+
+fn set_socket_nonblocking(stream: &mut MaybeTlsStream<TcpStream>) -> Result<(), AsrError> {
+    match stream {
+        MaybeTlsStream::Plain(stream) => stream
+            .set_nonblocking(true)
+            .map_err(|err| AsrError::Provider(format!("openai realtime nonblocking: {err}"))),
+        MaybeTlsStream::NativeTls(stream) => stream
+            .get_ref()
+            .set_nonblocking(true)
+            .map_err(|err| AsrError::Provider(format!("openai realtime nonblocking: {err}"))),
+        _ => Err(AsrError::Provider(
+            "openai realtime nonblocking: unsupported tls stream".to_string(),
+        )),
+    }
 }
 
 fn now_ms() -> i64 {
