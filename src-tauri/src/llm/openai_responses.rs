@@ -345,7 +345,14 @@ fn truncate_for_error(text: &str) -> String {
     if trimmed.len() <= LIMIT {
         return trimmed.to_string();
     }
-    format!("{}...", &trimmed[..LIMIT])
+
+    let boundary = trimmed
+        .char_indices()
+        .map(|(index, _)| index)
+        .take_while(|index| *index <= LIMIT)
+        .last()
+        .unwrap_or(0);
+    format!("{}...", &trimmed[..boundary])
 }
 
 fn now_ms() -> i64 {
@@ -353,4 +360,18 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_for_error;
+
+    #[test]
+    fn truncate_for_error_handles_unicode_boundaries() {
+        let text = format!("a{}", "测".repeat(100));
+        let truncated = truncate_for_error(&text);
+
+        assert!(truncated.ends_with("..."));
+        assert!(truncated.len() < text.len());
+    }
 }
