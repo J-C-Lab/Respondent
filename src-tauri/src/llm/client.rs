@@ -1,11 +1,15 @@
 use serde::Serialize;
 
+use crate::reply_style_settings::ReplyStyleSettings;
+
 #[derive(Debug, Clone)]
 pub struct ReplyRequest {
     pub session_id: String,
     pub generation_id: String,
     pub transcript: String,
     pub context: Vec<String>,
+    pub document_context: Option<String>,
+    pub reply_style: Option<ReplyStyleSettings>,
 }
 
 /// Streaming reply events. The wire shape mirrors the frontend RealtimeEvent
@@ -32,6 +36,12 @@ pub enum ReplyEvent {
         session_id: String,
         generation_id: String,
         text: String,
+        received_at_ms: i64,
+    },
+    #[serde(rename = "reply.cancelled")]
+    Cancelled {
+        session_id: String,
+        generation_id: String,
         received_at_ms: i64,
     },
 }

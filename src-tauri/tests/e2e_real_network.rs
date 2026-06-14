@@ -36,6 +36,8 @@ fn real_siliconflow_llm_smoke_when_api_key_is_present() {
         generation_id: "gen-sf".into(),
         transcript: "Could you summarize the timeline and next steps?".into(),
         context: vec!["Could you summarize the timeline and next steps?".into()],
+        document_context: None,
+        reply_style: None,
     });
 
     let deadline = Instant::now() + Duration::from_secs(40);
@@ -49,6 +51,7 @@ fn real_siliconflow_llm_smoke_when_api_key_is_present() {
                 eprint!("{token}");
             }
             ReplyPoll::Event(ReplyEvent::Final { text, .. }) => final_text = Some(text),
+            ReplyPoll::Event(ReplyEvent::Cancelled { .. }) => break,
             ReplyPoll::Pending => thread::sleep(Duration::from_millis(20)),
             ReplyPoll::Done => break,
         }
@@ -64,7 +67,7 @@ fn real_siliconflow_llm_smoke_when_api_key_is_present() {
         "SiliconFlow smoke must produce non-empty final text"
     );
     assert!(
-        !final_text.contains("Reply generation failed"),
+        !final_text.contains("回复生成失败"),
         "SiliconFlow request failed (generic failure final returned)"
     );
     assert!(
@@ -108,6 +111,8 @@ fn real_openai_asr_and_llm_smoke_when_api_key_is_present() {
         generation_id: "gen-real-network".into(),
         transcript: transcript.clone(),
         context: vec![transcript],
+        document_context: None,
+        reply_style: None,
     });
     let reply = wait_for_reply_final(&mut generation).expect("real LLM final reply");
 

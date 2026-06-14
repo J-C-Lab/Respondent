@@ -9,6 +9,7 @@ use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
+use crate::appearance_settings::{AppearanceSettings, AppearanceSettingsStore};
 use crate::asr::bailian_realtime::{BailianRealtimeAsrClient, BailianRealtimeConfig};
 use crate::asr::client::{AsrEvent, StreamingAsrClient};
 use crate::asr::endpointer::EnergyEndpointer;
@@ -22,8 +23,18 @@ use crate::llm::client::{ReplyEvent, StreamingReplyClient};
 use crate::llm::mock::MockReplyClient;
 use crate::llm::openai_compatible::{OpenAiCompatibleReplyClient, ProviderConfig};
 use crate::llm::openai_responses::{OpenAiReplyClient, OpenAiReplyConfig};
+use crate::docs::store::{DocumentStore, DocumentSummary};
 use crate::llm::reply_trigger::ReplyTrigger;
 use crate::llm::session::ReplySession;
+use crate::provider_config::{
+    activate_provider_profile as activate_profile_in_store,
+    clean_opt, delete_provider_profile as delete_profile_in_store,
+    load_profile_store, profiles_file_path, save_profile_store,
+    save_provider_settings, settings_file_path, upsert_provider_profile,
+    AsrProviderSettings, LlmProviderSettings, ProviderConfigSummary, ProviderProfileStore,
+    ProviderProfilesResponse, ProviderSettings,
+};
+use crate::reply_style_settings::{ReplyStyleSettings, ReplyStyleSettingsStore};
 use crate::session::db::{EventInsert, SessionDb};
 use crate::session::export::SessionExport;
 
@@ -106,6 +117,45 @@ impl PersistentSessionDb {
     }
 }
 
+#[derive(Clone)]
+pub struct ProviderConfigStore {
+    profiles_path: PathBuf,
+    legacy_settings_path: PathBuf,
+}
+
+impl ProviderConfigStore {
+    pub fn open(app: &tauri::AppHandle) -> Result<Self, String> {
+        Ok(Self {
+            profiles_path: profiles_file_path(app)?,
+            legacy_settings_path: settings_file_path(app)?,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn open_paths(profiles_path: PathBuf, legacy_settings_path: PathBuf) -> Self {
+        Self {
+            profiles_path,
+            legacy_settings_path,
+        }
+    }
+
+    fn load_store(&self) -> Result<ProviderProfileStore, String> {
+        load_profile_store(&self.profiles_path, &self.legacy_settings_path)
+    }
+
+    fn save_store(&self, store: &ProviderProfileStore) -> Result<(), String> {
+        save_profile_store(&self.profiles_path, store)
+    }
+
+    fn load(&self) -> Result<ProviderSettings, String> {
+        Ok(self.load_store()?.active_settings())
+    }
+
+    fn save(&self, settings: &ProviderSettings) -> Result<(), String> {
+        save_provider_settings(&self.legacy_settings_path, settings)
+    }
+}
+
 #[tauri::command]
 pub fn list_audio_output_devices() -> Vec<OutputDevice> {
     list_output_devices()
@@ -116,10 +166,13 @@ pub fn start_session(
     app: tauri::AppHandle,
     state: tauri::State<'_, SessionManager>,
     db: tauri::State<'_, PersistentSessionDb>,
+    provider_config: tauri::State<'_, ProviderConfigStore>,
     title: String,
     output_device_id: String,
+    endpointer_silence_ms: Option<u32>,
 ) -> Result<String, String> {
     validate_start_session(&title, &output_device_id)?;
+    let provider_settings = provider_config.load()?;
     let session_id = new_session_id();
     db.with_db(|db| {
         db.start_session_with_id(&session_id, &title, &output_device_id)
@@ -130,6 +183,8 @@ pub fn start_session(
         session_id.clone(),
         output_device_id,
         db.inner().clone(),
+        provider_settings,
+        endpointer_silence_ms,
     );
     let runtime = match runtime_result {
         Ok(runtime) => runtime,
@@ -148,7 +203,7 @@ pub fn start_session(
     }
     emit_status(
         &app,
-        SystemStatusEvent::info(Some(session_id.clone()), "Native realtime session started"),
+        SystemStatusEvent::info(Some(session_id.clone()), "原生实时会话已启动"),
     );
     Ok(session_id)
 }
@@ -176,6 +231,23 @@ pub fn end_session(
 }
 
 #[tauri::command]
+pub fn retry_reply(
+    state: tauri::State<'_, SessionManager>,
+    session_id: String,
+) -> Result<(), String> {
+    validate_session_id(&session_id)?;
+    let sessions = state
+        .inner()
+        .sessions
+        .lock()
+        .map_err(|_| "Session manager lock failed".to_string())?;
+    let runtime = sessions
+        .get(&session_id)
+        .ok_or_else(|| "会话不存在或已结束".to_string())?;
+    runtime.request_reply_retry()
+}
+
+#[tauri::command]
 pub fn export_session_markdown(
     state: tauri::State<'_, PersistentSessionDb>,
     session_id: String,
@@ -195,6 +267,187 @@ pub fn export_session_text(
     Ok(format_session_text(&export))
 }
 
+#[tauri::command]
+pub fn save_markdown_file(
+    app: tauri::AppHandle,
+    filename: String,
+    content: String,
+) -> Result<String, String> {
+    let export_dir = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().document_dir())
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|err| format!("Resolve export directory failed: {err}"))?;
+    std::fs::create_dir_all(&export_dir)
+        .map_err(|err| format!("Create export directory failed: {err}"))?;
+
+    let path = next_available_markdown_path(export_dir, &sanitize_markdown_filename(&filename));
+    std::fs::write(&path, content).map_err(|err| format!("Write markdown failed: {err}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn get_appearance_settings(
+    state: tauri::State<'_, AppearanceSettingsStore>,
+) -> AppearanceSettings {
+    state.get()
+}
+
+#[tauri::command]
+pub fn publish_appearance_settings(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppearanceSettingsStore>,
+    payload: AppearanceSettings,
+) -> Result<AppearanceSettings, String> {
+    state.publish(&app, payload)
+}
+
+#[tauri::command]
+pub fn get_reply_style_settings(
+    state: tauri::State<'_, Arc<ReplyStyleSettingsStore>>,
+) -> ReplyStyleSettings {
+    state.get()
+}
+
+#[tauri::command]
+pub fn save_reply_style_settings(
+    state: tauri::State<'_, Arc<ReplyStyleSettingsStore>>,
+    settings: ReplyStyleSettings,
+) -> Result<ReplyStyleSettings, String> {
+    state.save(settings)
+}
+
+#[tauri::command]
+pub fn get_provider_config(
+    state: tauri::State<'_, ProviderConfigStore>,
+) -> Result<ProviderConfigSummary, String> {
+    Ok(state.load()?.summary())
+}
+
+#[tauri::command]
+pub fn list_provider_profiles(
+    state: tauri::State<'_, ProviderConfigStore>,
+) -> Result<ProviderProfilesResponse, String> {
+    Ok(state.load_store()?.response())
+}
+
+#[tauri::command]
+pub fn save_provider_config(
+    state: tauri::State<'_, ProviderConfigStore>,
+    payload: ProviderSettings,
+) -> Result<ProviderConfigSummary, String> {
+    let existing = state.load()?;
+    let merged = merge_provider_settings(existing, payload);
+    state.save(&merged)?;
+    Ok(merged.summary())
+}
+
+#[tauri::command]
+pub fn save_provider_profile(
+    state: tauri::State<'_, ProviderConfigStore>,
+    name: String,
+    profile_id: Option<String>,
+    payload: ProviderSettings,
+) -> Result<ProviderProfilesResponse, String> {
+    let mut store = state.load_store()?;
+    upsert_provider_profile(
+        &mut store,
+        profile_id,
+        &name,
+        payload,
+        merge_provider_settings,
+    )?;
+    state.save_store(&store)?;
+    Ok(store.response())
+}
+
+#[tauri::command]
+pub fn activate_provider_profile(
+    state: tauri::State<'_, ProviderConfigStore>,
+    profile_id: String,
+) -> Result<ProviderProfilesResponse, String> {
+    let mut store = state.load_store()?;
+    activate_profile_in_store(&mut store, &profile_id)?;
+    state.save_store(&store)?;
+    Ok(store.response())
+}
+
+#[tauri::command]
+pub fn delete_provider_profile(
+    state: tauri::State<'_, ProviderConfigStore>,
+    profile_id: String,
+) -> Result<ProviderProfilesResponse, String> {
+    let mut store = state.load_store()?;
+    delete_profile_in_store(&mut store, &profile_id)?;
+    state.save_store(&store)?;
+    Ok(store.response())
+}
+
+#[tauri::command]
+pub fn clear_provider_config(
+    state: tauri::State<'_, ProviderConfigStore>,
+    scope: Option<String>,
+) -> Result<ProviderConfigSummary, String> {
+    let mut store = state.load_store()?;
+    let active_id = store.active_profile_id.clone();
+    let Some(active_id) = active_id else {
+        return Ok(ProviderSettings::default().summary());
+    };
+    let Some(active_profile) = store
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == active_id)
+    else {
+        return Ok(ProviderSettings::default().summary());
+    };
+
+    match scope
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("llm") => active_profile.settings.llm = None,
+        Some("asr") => active_profile.settings.asr = None,
+        _ => active_profile.settings = ProviderSettings::default(),
+    }
+    active_profile.updated_at_ms = chrono::Utc::now().timestamp_millis();
+    state.save_store(&store)?;
+    Ok(store.active_settings().summary())
+}
+
+#[tauri::command]
+pub fn load_document(
+    state: tauri::State<'_, Arc<Mutex<DocumentStore>>>,
+    name: String,
+    content: String,
+) -> DocumentSummary {
+    state.lock().unwrap().load(name, content)
+}
+
+#[tauri::command]
+pub fn unload_document(state: tauri::State<'_, Arc<Mutex<DocumentStore>>>, name: String) {
+    state.lock().unwrap().unload(&name);
+}
+
+#[tauri::command]
+pub fn list_documents(
+    state: tauri::State<'_, Arc<Mutex<DocumentStore>>>,
+) -> Vec<DocumentSummary> {
+    state.lock().unwrap().list()
+}
+
+pub fn merge_provider_settings(
+    existing: ProviderSettings,
+    update: ProviderSettings,
+) -> ProviderSettings {
+    ProviderSettings {
+        llm: merge_llm_settings(existing.llm, update.llm),
+        asr: merge_asr_settings(existing.asr, update.asr),
+    }
+}
+
 pub fn start_session_for_test(title: String, output_device_id: String) -> Result<String, String> {
     validate_start_session(&title, &output_device_id)?;
     Ok(new_session_id())
@@ -206,17 +459,17 @@ pub fn end_session_for_test(session_id: String) -> Result<(), String> {
 
 fn validate_start_session(title: &str, output_device_id: &str) -> Result<(), String> {
     if title.trim().is_empty() {
-        return Err("Session title cannot be empty".into());
+        return Err("会话标题不能为空".into());
     }
     if output_device_id.trim().is_empty() {
-        return Err("Output device id cannot be empty".into());
+        return Err("输出设备 ID 不能为空".into());
     }
     Ok(())
 }
 
 fn validate_session_id(session_id: &str) -> Result<(), String> {
     if session_id.trim().is_empty() {
-        return Err("Session id cannot be empty".into());
+        return Err("会话 ID 不能为空".into());
     }
     Ok(())
 }
@@ -239,27 +492,29 @@ impl SessionRuntime {
         session_id: String,
         output_device_id: String,
         db: PersistentSessionDb,
+        provider_settings: ProviderSettings,
+        endpointer_silence_ms: Option<u32>,
     ) -> Result<Self, String> {
-        eprintln!("[runtime] start: device={output_device_id:?}");
         let capture = LoopbackCapture::start(&output_device_id).map_err(|err| err.to_string())?;
-        eprintln!("[runtime] capture started");
         let frames = capture.receiver();
-        let (asr_client, using_mock_asr) = build_asr_client(&session_id)?;
-        eprintln!("[runtime] asr provider mock={using_mock_asr}");
+        let (asr_client, using_mock_asr) = build_asr_client(&session_id, &provider_settings)?;
+        let silence_ms = endpointer_silence_ms.unwrap_or(300).clamp(300, 3000);
         let transcription = TranscriptionSession::start(
             session_id.clone(),
             frames,
             asr_client,
-            EnergyEndpointer::with_defaults(),
+            EnergyEndpointer::new(0.01, silence_ms),
         );
         let asr_events = transcription.events();
         let (reply_asr_tx, reply_asr_rx) = unbounded::<AsrEvent>();
         let asr_bridge = spawn_asr_bridge(app.clone(), asr_events, reply_asr_tx, db.clone());
-        let (reply_client, using_mock_llm) = build_reply_client()?;
+        let (reply_client, using_mock_llm) = build_reply_client(&provider_settings)?;
+        let doc_store = app.state::<Arc<Mutex<DocumentStore>>>().inner().clone();
+        let style_store = app.state::<Arc<ReplyStyleSettingsStore>>().inner().clone();
         let reply = ReplySession::start(
             reply_asr_rx,
             reply_client,
-            ReplyTrigger::new(session_id.clone()),
+            ReplyTrigger::new(session_id.clone(), doc_store, style_store),
         );
         let reply_bridge = spawn_reply_bridge(app.clone(), reply.events(), db);
 
@@ -268,7 +523,7 @@ impl SessionRuntime {
                 &app,
                 SystemStatusEvent::info(
                     Some(session_id.clone()),
-                    "OPENAI_API_KEY not set; using mock ASR provider",
+                    "未设置 OPENAI_API_KEY，正在使用演示 ASR 服务商",
                 ),
             );
         }
@@ -277,7 +532,7 @@ impl SessionRuntime {
                 &app,
                 SystemStatusEvent::info(
                     Some(session_id),
-                    "No LLM provider configured; using mock LLM provider",
+                    "未配置 LLM 服务商，正在使用演示 LLM 服务商",
                 ),
             );
         }
@@ -298,10 +553,17 @@ impl SessionRuntime {
         self.asr_bridge.stop();
         self.reply_bridge.stop();
     }
+
+    fn request_reply_retry(&self) -> Result<(), String> {
+        self.reply.request_retry()
+    }
 }
 
-fn build_asr_client(session_id: &str) -> Result<(Box<dyn StreamingAsrClient>, bool), String> {
-    resolve_asr_client(session_id, &current_env())
+fn build_asr_client(
+    session_id: &str,
+    settings: &ProviderSettings,
+) -> Result<(Box<dyn StreamingAsrClient>, bool), String> {
+    resolve_asr_client_with_settings(session_id, &current_env(), settings)
 }
 
 pub fn resolve_asr_client(
@@ -337,11 +599,12 @@ pub fn resolve_asr_client(
         },
         "openai_realtime" => match get("OPENAI_API_KEY") {
             Some(api_key) => {
-                let client = OpenAiRealtimeAsrClient::connect(
-                    session_id.to_string(),
-                    OpenAiRealtimeConfig::from_api_key(api_key),
-                )
-                .map_err(|e| e.to_string())?;
+                let mut config = OpenAiRealtimeConfig::from_api_key(api_key);
+                if let Some(model) = get("OPENAI_ASR_MODEL") {
+                    config.model = model;
+                }
+                let client = OpenAiRealtimeAsrClient::connect(session_id.to_string(), config)
+                    .map_err(|e| e.to_string())?;
                 Ok((Box::new(client), false))
             }
             None => Ok((Box::new(MockAsrClient::new(session_id)), true)),
@@ -374,6 +637,17 @@ pub fn resolve_asr_client(
     }
 }
 
+pub fn resolve_asr_client_with_settings(
+    session_id: &str,
+    env: &HashMap<String, String>,
+    settings: &ProviderSettings,
+) -> Result<(Box<dyn StreamingAsrClient>, bool), String> {
+    match settings.asr.as_ref().and_then(asr_settings_env) {
+        Some(manual_env) => resolve_asr_client(session_id, &manual_env),
+        None => resolve_asr_client(session_id, env),
+    }
+}
+
 pub fn resolve_asr_provider_name(session_id: &str, env: &HashMap<String, String>) -> &'static str {
     let _ = session_id;
     let provider = env
@@ -388,6 +662,17 @@ pub fn resolve_asr_provider_name(session_id: &str, env: &HashMap<String, String>
         "openai_realtime" if has("OPENAI_API_KEY") => "openai-realtime-asr",
         "bailian_realtime" if has("DASHSCOPE_API_KEY") => "bailian-realtime-asr",
         _ => "mock-asr",
+    }
+}
+
+pub fn resolve_asr_provider_name_with_settings(
+    session_id: &str,
+    env: &HashMap<String, String>,
+    settings: &ProviderSettings,
+) -> &'static str {
+    match settings.asr.as_ref().and_then(asr_settings_env) {
+        Some(manual_env) => resolve_asr_provider_name(session_id, &manual_env),
+        None => resolve_asr_provider_name(session_id, env),
     }
 }
 
@@ -487,8 +772,27 @@ pub fn resolve_reply_client(
     }
 }
 
+pub fn resolve_reply_client_with_settings(
+    env: &HashMap<String, String>,
+    settings: &ProviderSettings,
+) -> Result<(Box<dyn StreamingReplyClient>, bool), String> {
+    match settings.llm.as_ref().and_then(llm_settings_env) {
+        Some(manual_env) => resolve_reply_client(&manual_env),
+        None => resolve_reply_client(env),
+    }
+}
+
 pub fn resolve_reply_provider_name(env: &HashMap<String, String>) -> &'static str {
     let (client, _) = resolve_reply_client(env).expect("resolve reply client");
+    client.name()
+}
+
+pub fn resolve_reply_provider_name_with_settings(
+    env: &HashMap<String, String>,
+    settings: &ProviderSettings,
+) -> &'static str {
+    let (client, _) =
+        resolve_reply_client_with_settings(env, settings).expect("resolve reply client");
     client.name()
 }
 
@@ -496,8 +800,157 @@ fn current_env() -> HashMap<String, String> {
     std::env::vars().collect()
 }
 
-fn build_reply_client() -> Result<(Box<dyn StreamingReplyClient>, bool), String> {
-    resolve_reply_client(&current_env())
+fn llm_settings_env(settings: &LlmProviderSettings) -> Option<HashMap<String, String>> {
+    let provider = non_empty(&settings.provider)?;
+    let api_key = settings.api_key.as_deref().and_then(non_empty)?;
+    let mut env = HashMap::new();
+    env.insert("LLM_PROVIDER".to_string(), provider.clone());
+
+    match provider.as_str() {
+        "openai" => {
+            env.insert("OPENAI_API_KEY".to_string(), api_key);
+            insert_optional(&mut env, "OPENAI_LLM_MODEL", settings.model.as_deref());
+        }
+        "dashscope" => {
+            env.insert("DASHSCOPE_API_KEY".to_string(), api_key);
+            insert_optional(&mut env, "DASHSCOPE_BASE_URL", settings.base_url.as_deref());
+            insert_optional(&mut env, "DASHSCOPE_LLM_MODEL", settings.model.as_deref());
+        }
+        "zhipu" => {
+            env.insert("ZHIPU_API_KEY".to_string(), api_key);
+            insert_optional(&mut env, "ZHIPU_BASE_URL", settings.base_url.as_deref());
+            insert_optional(&mut env, "ZHIPU_LLM_MODEL", settings.model.as_deref());
+        }
+        "siliconflow" => {
+            env.insert("SILICONFLOW_API_KEY".to_string(), api_key);
+            insert_optional(
+                &mut env,
+                "SILICONFLOW_BASE_URL",
+                settings.base_url.as_deref(),
+            );
+            insert_optional(&mut env, "SILICONFLOW_LLM_MODEL", settings.model.as_deref());
+        }
+        "openai_compatible" => {
+            env.insert("OPENAI_COMPATIBLE_API_KEY".to_string(), api_key);
+            env.insert(
+                "OPENAI_COMPATIBLE_BASE_URL".to_string(),
+                settings.base_url.as_deref().and_then(non_empty)?,
+            );
+            env.insert(
+                "OPENAI_COMPATIBLE_MODEL".to_string(),
+                settings.model.as_deref().and_then(non_empty)?,
+            );
+        }
+        _ => return None,
+    }
+
+    Some(env)
+}
+
+fn asr_settings_env(settings: &AsrProviderSettings) -> Option<HashMap<String, String>> {
+    let provider = non_empty(&settings.provider)?;
+    let api_key = settings.api_key.as_deref().and_then(non_empty)?;
+    let mut env = HashMap::new();
+    env.insert("ASR_PROVIDER".to_string(), provider.clone());
+
+    match provider.as_str() {
+        "openai_realtime" => {
+            env.insert("OPENAI_API_KEY".to_string(), api_key);
+            insert_optional(&mut env, "OPENAI_ASR_MODEL", settings.model.as_deref());
+        }
+        "bailian_realtime" => {
+            env.insert("DASHSCOPE_API_KEY".to_string(), api_key);
+            insert_optional(&mut env, "DASHSCOPE_ASR_MODEL", settings.model.as_deref());
+            insert_optional(
+                &mut env,
+                "DASHSCOPE_ASR_LANGUAGE_HINT",
+                settings.language_hint.as_deref(),
+            );
+            if let Some(value) = settings.max_sentence_silence_ms {
+                env.insert(
+                    "DASHSCOPE_ASR_MAX_SENTENCE_SILENCE_MS".to_string(),
+                    value.to_string(),
+                );
+            }
+            if let Some(value) = settings.heartbeat {
+                env.insert("DASHSCOPE_ASR_HEARTBEAT".to_string(), value.to_string());
+            }
+        }
+        "siliconflow_file" => {
+            env.insert("SILICONFLOW_API_KEY".to_string(), api_key);
+            insert_optional(
+                &mut env,
+                "SILICONFLOW_BASE_URL",
+                settings.base_url.as_deref(),
+            );
+            insert_optional(&mut env, "SILICONFLOW_ASR_MODEL", settings.model.as_deref());
+        }
+        _ => return None,
+    }
+
+    Some(env)
+}
+
+fn insert_optional(env: &mut HashMap<String, String>, key: &str, value: Option<&str>) {
+    if let Some(value) = value.and_then(non_empty) {
+        env.insert(key.to_string(), value);
+    }
+}
+
+fn merge_llm_settings(
+    existing: Option<LlmProviderSettings>,
+    update: Option<LlmProviderSettings>,
+) -> Option<LlmProviderSettings> {
+    let update = update?;
+    let old_key = existing
+        .as_ref()
+        .filter(|existing| same_provider(&existing.provider, &update.provider))
+        .and_then(|existing| existing.api_key.clone());
+    Some(LlmProviderSettings {
+        provider: clean_opt(Some(&update.provider))?,
+        api_key: clean_opt(update.api_key.as_deref()).or(old_key),
+        base_url: clean_opt(update.base_url.as_deref()),
+        model: clean_opt(update.model.as_deref()),
+    })
+}
+
+fn merge_asr_settings(
+    existing: Option<AsrProviderSettings>,
+    update: Option<AsrProviderSettings>,
+) -> Option<AsrProviderSettings> {
+    let update = update?;
+    let old_key = existing
+        .as_ref()
+        .filter(|existing| same_provider(&existing.provider, &update.provider))
+        .and_then(|existing| existing.api_key.clone());
+    Some(AsrProviderSettings {
+        provider: clean_opt(Some(&update.provider))?,
+        api_key: clean_opt(update.api_key.as_deref()).or(old_key),
+        base_url: clean_opt(update.base_url.as_deref()),
+        model: clean_opt(update.model.as_deref()),
+        language_hint: clean_opt(update.language_hint.as_deref()),
+        max_sentence_silence_ms: update.max_sentence_silence_ms,
+        heartbeat: update.heartbeat,
+    })
+}
+
+fn same_provider(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn build_reply_client(
+    settings: &ProviderSettings,
+) -> Result<(Box<dyn StreamingReplyClient>, bool), String> {
+    resolve_reply_client_with_settings(&current_env(), settings)
 }
 
 struct BridgeHandle {
@@ -614,19 +1067,19 @@ fn persist_reply_event(db: &PersistentSessionDb, event: &ReplyEvent) {
 }
 
 fn format_session_markdown(export: &SessionExport) -> String {
-    let ended_at = export.ended_at.as_deref().unwrap_or("In progress");
+    let ended_at = export.ended_at.as_deref().unwrap_or("进行中");
     let mut lines = vec![
         format!("## {}", export.title),
         String::new(),
-        format!("- Started: {}", export.started_at),
-        format!("- Ended: {ended_at}"),
+        format!("- 开始：{}", export.started_at),
+        format!("- 结束：{ended_at}"),
         String::new(),
-        "### Timeline".to_string(),
+        "### 时间线".to_string(),
         String::new(),
     ];
     lines.extend(export.events.iter().map(|event| {
         format!(
-            "- [{}] {}: {}",
+            "- [{}] {}：{}",
             format_timestamp(event.ended_at_ms),
             event_label(&event.event_type),
             event.text
@@ -637,16 +1090,16 @@ fn format_session_markdown(export: &SessionExport) -> String {
 }
 
 fn format_session_text(export: &SessionExport) -> String {
-    let ended_at = export.ended_at.as_deref().unwrap_or("In progress");
+    let ended_at = export.ended_at.as_deref().unwrap_or("进行中");
     let mut lines = vec![
         export.title.clone(),
-        format!("Started: {}", export.started_at),
-        format!("Ended: {ended_at}"),
+        format!("开始：{}", export.started_at),
+        format!("结束：{ended_at}"),
         String::new(),
     ];
     lines.extend(export.events.iter().map(|event| {
         format!(
-            "[{}] {}: {}",
+            "[{}] {}：{}",
             format_timestamp(event.ended_at_ms),
             event_label(&event.event_type),
             event.text
@@ -658,9 +1111,9 @@ fn format_session_text(export: &SessionExport) -> String {
 
 fn event_label(event_type: &str) -> &'static str {
     match event_type {
-        "transcript" => "Transcript",
-        "suggestion" => "Suggestion",
-        _ => "System",
+        "transcript" => "转写",
+        "suggestion" => "建议回复",
+        _ => "系统",
     }
 }
 
@@ -670,6 +1123,46 @@ fn format_timestamp(ms: i64) -> String {
     let seconds = (ms % 60_000) / 1_000;
     let milliseconds = ms % 1_000;
     format!("{minutes:02}:{seconds:02}.{milliseconds:03}")
+}
+
+fn sanitize_markdown_filename(filename: &str) -> String {
+    let sanitized = filename
+        .trim()
+        .chars()
+        .map(|ch| match ch {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            ch if ch.is_control() => '-',
+            ch => ch,
+        })
+        .collect::<String>()
+        .trim_matches([' ', '.'])
+        .to_string();
+    let stem = if sanitized.is_empty() {
+        "会话导出".to_string()
+    } else {
+        sanitized
+    };
+    if stem.to_lowercase().ends_with(".md") {
+        stem
+    } else {
+        format!("{stem}.md")
+    }
+}
+
+fn next_available_markdown_path(dir: PathBuf, filename: &str) -> PathBuf {
+    let initial = dir.join(filename);
+    if !initial.exists() {
+        return initial;
+    }
+
+    let stem = filename.strip_suffix(".md").unwrap_or(filename);
+    for index in 2..10_000 {
+        let candidate = dir.join(format!("{stem} ({index}).md"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join(format!("{stem}-{}.md", now_ms()))
 }
 
 pub fn export_session_markdown_for_test(export: &SessionExport) -> String {

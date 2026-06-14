@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use super::client::{LlmError, ReplyGeneration, ReplyRequest, StreamingReplyClient};
+use super::prompt::build_system_prompt;
 use super::streaming::{spawn_streaming_reply, truncate_for_error, ReplyChunk, SseValueStream};
 
 const DEFAULT_OPENAI_REPLY_MODEL: &str = "gpt-5.4-mini";
@@ -56,7 +57,7 @@ pub struct ReqwestResponsesTransport {
 impl Default for ReqwestResponsesTransport {
     fn default() -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: super::streaming::build_streaming_http_client(),
         }
     }
 }
@@ -192,22 +193,25 @@ fn responses_map(value: &Value) -> ReplyChunk {
 }
 
 pub fn build_responses_body(config: &OpenAiReplyConfig, request: &ReplyRequest) -> Value {
+    let user_content = match &request.document_context {
+        Some(doc_ctx) => format!(
+            "Reference documents (factual background only):\n---\n{}\n---\n\nConversation context:\n{}\n\nCurrent turn:\n{}\n\nWrite the suggested reply only.",
+            doc_ctx,
+            format_context(&request.context),
+            request.transcript
+        ),
+        None => format!(
+            "Conversation context:\n{}\n\nCurrent turn:\n{}\n\nWrite the suggested reply only.",
+            format_context(&request.context),
+            request.transcript
+        ),
+    };
     json!({
         "model": config.model,
         "stream": true,
         "input": [
-            {
-                "role": "system",
-                "content": "You are a live meeting assistant. Suggest one concise, useful reply the user could say next. Keep it natural, specific, and short."
-            },
-            {
-                "role": "user",
-                "content": format!(
-                    "Conversation context:\n{}\n\nCurrent turn:\n{}\n\nWrite the suggested reply only.",
-                    format_context(&request.context),
-                    request.transcript
-                )
-            }
+            {"role": "system", "content": build_system_prompt(request.reply_style.as_ref())},
+            {"role": "user", "content": user_content}
         ]
     })
 }

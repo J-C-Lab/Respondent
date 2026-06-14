@@ -1,5 +1,8 @@
 use respondent_lib::asr::client::AsrEvent;
+use respondent_lib::docs::store::DocumentStore;
 use respondent_lib::llm::reply_trigger::ReplyTrigger;
+use respondent_lib::reply_style_settings::ReplyStyleSettingsStore;
+use std::sync::{Arc, Mutex};
 
 fn endpoint() -> AsrEvent {
     AsrEvent::Endpoint {
@@ -29,9 +32,17 @@ fn partial(text: &str) -> AsrEvent {
     }
 }
 
+fn empty_doc_store() -> Arc<Mutex<DocumentStore>> {
+    Arc::new(Mutex::new(DocumentStore::default()))
+}
+
+fn empty_style_store() -> Arc<ReplyStyleSettingsStore> {
+    Arc::new(ReplyStyleSettingsStore::with_settings(Default::default()))
+}
+
 #[test]
 fn trigger_fires_on_endpoint_then_final() {
-    let mut trigger = ReplyTrigger::new("s1");
+    let mut trigger = ReplyTrigger::new("s1", empty_doc_store(), empty_style_store());
     assert!(trigger.observe(&endpoint()).is_none());
     let request = trigger
         .observe(&final_event("hello there"))
@@ -44,19 +55,19 @@ fn trigger_fires_on_endpoint_then_final() {
 
 #[test]
 fn trigger_ignores_final_without_endpoint() {
-    let mut trigger = ReplyTrigger::new("s1");
+    let mut trigger = ReplyTrigger::new("s1", empty_doc_store(), empty_style_store());
     assert!(trigger.observe(&final_event("no endpoint yet")).is_none());
 }
 
 #[test]
 fn trigger_ignores_partials() {
-    let mut trigger = ReplyTrigger::new("s1");
+    let mut trigger = ReplyTrigger::new("s1", empty_doc_store(), empty_style_store());
     assert!(trigger.observe(&partial("typing")).is_none());
 }
 
 #[test]
 fn trigger_rolls_context_to_six_and_counts_generations() {
-    let mut trigger = ReplyTrigger::new("s1");
+    let mut trigger = ReplyTrigger::new("s1", empty_doc_store(), empty_style_store());
     let mut last = None;
     for index in 0..7 {
         trigger.observe(&endpoint());
@@ -80,7 +91,7 @@ fn trigger_rolls_context_to_six_and_counts_generations() {
 
 #[test]
 fn double_endpoint_does_not_double_fire() {
-    let mut trigger = ReplyTrigger::new("s1");
+    let mut trigger = ReplyTrigger::new("s1", empty_doc_store(), empty_style_store());
     trigger.observe(&endpoint());
     trigger.observe(&endpoint()); // second endpoint while armed — idempotent
     assert!(trigger.observe(&final_event("once")).is_some());
@@ -98,6 +109,8 @@ fn mock_reply_streams_started_tokens_final_then_done() {
         generation_id: "gen-1".into(),
         transcript: "could you summarize the timeline".into(),
         context: vec!["could you summarize the timeline".into()],
+        document_context: None,
+        reply_style: None,
     });
 
     let mut events = Vec::new();
@@ -127,7 +140,7 @@ fn mock_reply_streams_started_tokens_final_then_done() {
             _ => None,
         })
         .collect();
-    assert_eq!(token_texts, ["Acknowledged: ", "could you summarize"]);
+    assert_eq!(token_texts, ["已确认：", "could you summarize"]);
     match events.last() {
         Some(ReplyEvent::Final {
             generation_id,
@@ -135,7 +148,7 @@ fn mock_reply_streams_started_tokens_final_then_done() {
             ..
         }) => {
             assert_eq!(generation_id.as_str(), "gen-1");
-            assert_eq!(text.as_str(), "Acknowledged: could you summarize");
+            assert_eq!(text.as_str(), "已确认：could you summarize");
         }
         other => panic!("expected final, got {other:?}"),
     }
@@ -153,7 +166,7 @@ use respondent_lib::llm::session::ReplySession;
 #[test]
 fn session_streams_started_tokens_final_for_one_trigger() {
     let (tx, rx) = unbounded();
-    let session = ReplySession::start(rx, Box::new(MockReplyClient), ReplyTrigger::new("s1"));
+    let session = ReplySession::start(rx, Box::new(MockReplyClient), ReplyTrigger::new("s1", empty_doc_store(), empty_style_store()));
     let events = session.events();
 
     tx.send(partial("hel")).unwrap();
@@ -185,7 +198,7 @@ fn session_streams_started_tokens_final_for_one_trigger() {
 #[test]
 fn session_latest_trigger_wins() {
     let (tx, rx) = unbounded();
-    let session = ReplySession::start(rx, Box::new(MockReplyClient), ReplyTrigger::new("s1"));
+    let session = ReplySession::start(rx, Box::new(MockReplyClient), ReplyTrigger::new("s1", empty_doc_store(), empty_style_store()));
     let events = session.events();
 
     // Two triggers queued before the worker pumps; the latest must win.
@@ -217,4 +230,60 @@ fn session_latest_trigger_wins() {
         gen1_finals, 0,
         "gen-1 was superseded and must not produce a final"
     );
+}
+
+#[test]
+fn session_retries_last_turn_on_request() {
+    let (tx, rx) = unbounded();
+    let session = ReplySession::start(
+        rx,
+        Box::new(MockReplyClient),
+        ReplyTrigger::new("s1", empty_doc_store(), empty_style_store()),
+    );
+    let events = session.events();
+
+    tx.send(endpoint()).unwrap();
+    tx.send(final_event("retry me")).unwrap();
+
+    let first = collect_until_final(&events, Duration::from_secs(2));
+    assert!(first.iter().any(|event| matches!(
+        event,
+        ReplyEvent::Final {
+            generation_id,
+            text,
+            ..
+        } if generation_id == "gen-1" && text.starts_with("已确认：")
+    )));
+
+    session.request_retry().expect("retry signal");
+
+    let second = collect_until_final(&events, Duration::from_secs(2));
+    assert!(second.iter().any(|event| matches!(
+        event,
+        ReplyEvent::Final { generation_id, .. } if generation_id == "gen-2"
+    )));
+
+    drop(tx);
+    session.stop().unwrap();
+}
+
+fn collect_until_final(
+    events: &crossbeam_channel::Receiver<ReplyEvent>,
+    timeout: Duration,
+) -> Vec<ReplyEvent> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut collected = Vec::new();
+    while std::time::Instant::now() < deadline {
+        match events.recv_timeout(Duration::from_millis(50)) {
+            Ok(event) => {
+                collected.push(event);
+                if matches!(collected.last(), Some(ReplyEvent::Final { .. })) {
+                    return collected;
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    collected
 }

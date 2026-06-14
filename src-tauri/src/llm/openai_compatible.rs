@@ -4,9 +4,8 @@ use serde_json::{json, Value};
 
 use super::client::{LlmError, ReplyGeneration, ReplyRequest, StreamingReplyClient};
 use super::openai_responses::format_context;
+use super::prompt::build_system_prompt;
 use super::streaming::{spawn_streaming_reply, ReplyChunk, ReqwestSseStream, SseValueStream};
-
-const SYSTEM_PROMPT: &str = "You are a live meeting assistant. Suggest one concise, useful reply the user could say next. Keep it natural, specific, and short.";
 
 #[derive(Clone)]
 pub struct ProviderConfig {
@@ -20,16 +19,25 @@ pub fn join_chat_url(base_url: &str) -> String {
 }
 
 pub fn build_chat_body(config: &ProviderConfig, request: &ReplyRequest) -> Value {
+    let user_content = match &request.document_context {
+        Some(doc_ctx) => format!(
+            "Reference documents (factual background only):\n---\n{}\n---\n\nConversation context:\n{}\n\nCurrent turn:\n{}\n\nWrite the suggested reply only.",
+            doc_ctx,
+            format_context(&request.context),
+            request.transcript
+        ),
+        None => format!(
+            "Conversation context:\n{}\n\nCurrent turn:\n{}\n\nWrite the suggested reply only.",
+            format_context(&request.context),
+            request.transcript
+        ),
+    };
     json!({
         "model": config.model,
         "stream": true,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": format!(
-                "Conversation context:\n{}\n\nCurrent turn:\n{}\n\nWrite the suggested reply only.",
-                format_context(&request.context),
-                request.transcript
-            )}
+            {"role": "system", "content": build_system_prompt(request.reply_style.as_ref())},
+            {"role": "user", "content": user_content}
         ]
     })
 }
@@ -61,7 +69,7 @@ pub struct ReqwestChatTransport {
 impl Default for ReqwestChatTransport {
     fn default() -> Self {
         Self {
-            client: reqwest::blocking::Client::new(),
+            client: super::streaming::build_streaming_http_client(),
         }
     }
 }
