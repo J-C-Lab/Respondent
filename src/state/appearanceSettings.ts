@@ -129,9 +129,10 @@ export function buildAppearanceShellStyle(
       ? LIGHT_APPEARANCE_TOKENS
       : DARK_APPEARANCE_TOKENS;
 
-  return {
+  const style: CSSProperties & Record<`--${string}`, string> = {
     "--window-opacity": (settings.windowOpacity / 100).toFixed(2),
     "--window-blur": `${settings.windowBlur}px`,
     ...themeTokens,
-  } as unknown as CSSProperties;
+  };
+  return style;
 }
